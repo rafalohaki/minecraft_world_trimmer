@@ -21,6 +21,22 @@ pub struct Cli {
     /// Compression level when writing region files
     #[arg(short, long, default_value = "6", value_parser = validate_compression_level)]
     pub compression_level: u32,
+
+    /// Path to output a CSV file when using palette mode
+    #[arg(long, requires = "palette")]
+    pub csv_out: Option<PathBuf>,
+
+    /// Path to input a CSV file when using palette mode
+    #[arg(long, group = "palette_options")]
+    pub csv_in: Option<PathBuf>,
+
+    /// Block ID to filter by when using palette mode
+    #[arg(long, group = "palette_options")]
+    pub id: Option<String>,
+
+    /// Minimum count of the block ID in a chunk to include it
+    #[arg(long, requires = "id")]
+    pub count: Option<u32>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -32,6 +48,9 @@ pub enum Mode {
     /// This is a destructive process, make sure to make a backup of your worlds before running.
     /// Also make sure the world is not loaded by the game as this will corrupt the world.
     Write,
+
+    /// Allows you to filter and delete chunks with specific block ids, also create and import a CSV file for easy deletion
+    Palette,
 }
 
 fn validate_compression_level(s: &str) -> Result<u32, String> {
