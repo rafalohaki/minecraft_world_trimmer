@@ -104,6 +104,15 @@ It can also be used to trim server worlds as dimensions are split in multiple wo
 ❯ minecraft_world_trimmer check /path/to/server/world /path/to/server/world_nether /path/to/server/world_the_end
 ```
 
+Filtering tnt with more than 20 blocks in chunks and 
+saving results to csv file, then deletin chunks from csv file
+```shell
+❯ minecraft_world_trimmer palette /path/to/server/world  --csv-out=tntdowyjebania.csv --id=tnt --count=20
+
+❯ minecraft_world_trimmer palette /path/to/server/world  --csv-out=tntdowyjebania.csv --id=tnt --count=20
+
+```
+
 ## Similar Tools
 
 - [Querz/mcaselector](https://github.com/Querz/mcaselector) - has a graphical user interface
