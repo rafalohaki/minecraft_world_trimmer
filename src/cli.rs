@@ -2,6 +2,7 @@ use clap::{Parser, ValueEnum};
 use std::cmp::Ord;
 use std::path::PathBuf;
 
+/// use std::sync::{Mutex, OnceLock}; for buffering and caching to speed up processing, not implemented
 #[derive(Parser)]
 #[command(
     name = "minecraft_world_optimizer",
@@ -23,11 +24,11 @@ pub struct Cli {
     pub compression_level: u32,
 
     /// Path to output a CSV file when using palette mode
-    #[arg(long, requires = "palette")]
+    #[arg(long, requires = "Palette")]
     pub csv_out: Option<PathBuf>,
 
     /// Path to input a CSV file when using palette mode
-    #[arg(long, group = "palette_options")]
+    #[arg(long, requires = "Palette")]
     pub csv_in: Option<PathBuf>,
 
     /// Block ID to filter by when using palette mode

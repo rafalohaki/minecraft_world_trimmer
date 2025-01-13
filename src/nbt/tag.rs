@@ -110,7 +110,7 @@ impl Tag {
         }
     }
 
-    fn get_name(&self) -> Option<String> {
+    pub fn get_name(&self) -> Option<String> {
         match self {
             Tag::End => None,
             Tag::Byte { name, .. } => name.clone(),

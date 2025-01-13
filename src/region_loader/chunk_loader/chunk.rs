@@ -16,6 +16,9 @@ pub struct Chunk {
 
 impl Chunk {
     const STATUS_FULL: &'static str = "minecraft:full";
+    const BLOCK_STATES: &'static str = "block_states";
+    const PALETTE: &'static str = "palette";
+    const NAME: &'static str = "Name";
 
     pub fn from_location(buf: &[u8], location: Location) -> Result<Self, &'static str> {
         // Chunk header parsing
@@ -115,5 +118,40 @@ impl Chunk {
         result.push(compression_scheme.to_u8()); // adding the compression scheme byte
         result.extend_from_slice(nbt_bytes);
         result
+    }
+
+    pub fn count_block(&self, block_id: &str) -> u32 {
+        let block_states = self.nbt.find_tag(Self::BLOCK_STATES);
+        if let Some(Tag::Compound {
+            value: block_states_value,
+            ..
+        }) = block_states
+        {
+            let palette = block_states_value
+                .iter()
+                .find(|tag| tag.get_name().as_deref() == Some(Self::PALETTE));
+            if let Some(Tag::List {
+                value: palette_value,
+                ..
+            }) = palette
+            {
+                return palette_value
+                    .iter()
+                    .filter(|palette_entry| {
+                        if let Tag::Compound {
+                            value: entry_value, ..
+                        } = palette_entry
+                        {
+                            return entry_value.iter().any(|tag| {
+                                tag.get_name().as_deref() == Some(Self::NAME)
+                                    && tag.get_string().map(|s| s.as_str()) == Some(block_id)
+                            });
+                        }
+                        false
+                    })
+                    .count() as u32;
+            }
+        }
+        0
     }
 }

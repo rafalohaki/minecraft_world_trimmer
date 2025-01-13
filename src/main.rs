@@ -22,6 +22,8 @@ fn main() {
             &cli.world_paths,
             &cli.csv_out,
             &cli.csv_in,
+            cli.id.as_deref(),
+            cli.count,
         ),
     };
 

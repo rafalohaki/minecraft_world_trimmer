@@ -167,6 +167,7 @@ dependencies = [
  "bytes",
  "cesu8",
  "derive_more",
+ "serde",
  "thiserror",
 ]
 
@@ -347,6 +348,7 @@ dependencies = [
  "flate2",
  "indicatif",
  "rayon",
+ "serde",
  "thiserror",
 ]
 
