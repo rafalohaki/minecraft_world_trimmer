@@ -9,3 +9,4 @@ flate2 = { version = "1", default-features = false, features = ["zlib-ng"] }
 indicatif = "0.17"
 rayon = "1.10"
 thiserror = "2.0.12"
+lz4_flex = "0.11"

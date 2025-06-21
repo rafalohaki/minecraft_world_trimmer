@@ -68,13 +68,6 @@ impl Tag {
         }
     }
 
-    pub fn get_int(&self) -> Option<&i32> {
-        match self {
-            Tag::Int { value, .. } => Some(value),
-            _ => None,
-        }
-    }
-
     pub fn get_string(&self) -> Option<&String> {
         match self {
             Tag::String { value, .. } => Some(value),
