@@ -125,7 +125,7 @@ impl Region {
 }
 
 fn align_vec_size(vec: &mut Vec<u8>) {
-    let aligned_size = ((vec.len() + 4095) / 4096) * 4096;
+    let aligned_size = vec.len().div_ceil(4096) * 4096;
     vec.resize(aligned_size, 0);
 }
 
