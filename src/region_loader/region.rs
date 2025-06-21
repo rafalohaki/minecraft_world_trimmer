@@ -45,8 +45,8 @@ impl Region {
                 if let Ok(chunk) = Chunk::from_location(bytes, location) {
                     chunks.push(chunk);
                 }
-                // Else, we choose to not load the chunk and loose it because it is invalid
-                // FIXME: We might not want to loose the chunk if the compression scheme is an unsupported type (eg. LZ4 since 24w04a or custom algorithm since 24w05a)
+                // Else, we choose to not load the chunk and lose it because it is invalid
+                // FIXME: We might not want to lose the chunk if the compression scheme is an unsupported type (eg. LZ4 since 24w04a or custom algorithm since 24w05a)
             }
         }
 
