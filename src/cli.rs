@@ -11,7 +11,7 @@ use std::path::PathBuf;
 )]
 pub struct Cli {
     /// What mode to run the program in
-    #[arg(value_enum, required = true)]
+    #[arg(value_enum, default_value_t = Mode::Check)]
     pub mode: Mode,
 
     /// Path to your Minecraft Worlds containing `level.dat` file
