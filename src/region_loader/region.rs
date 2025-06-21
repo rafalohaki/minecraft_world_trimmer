@@ -42,11 +42,10 @@ impl Region {
             let location = Location::from_bytes(l, timestamp);
 
             if location.is_valid() {
-                if let Ok(chunk) = Chunk::from_location(bytes, location) {
+                if let Ok(chunk) = Chunk::from_location(bytes, location, i) {
                     chunks.push(chunk);
                 }
-                // Else, we choose to not load the chunk and lose it because it is invalid
-                // FIXME: We might not want to lose the chunk if the compression scheme is an unsupported type (eg. LZ4 since 24w04a or custom algorithm since 24w05a)
+                // If parsing fails, the raw bytes are preserved so the chunk isn't lost
             }
         }
 
@@ -72,10 +71,8 @@ impl Region {
             let original_timestamp = chunk.location.get_timestamp();
             let new_location = Location::new(new_position, new_size, original_timestamp);
 
-            let chunk_position = chunk.get_position();
-            if let (Ok(new_location), Ok((x, z))) = (new_location, chunk_position) {
-                // Add the location to the header table
-                let position_in_table = get_position_in_table(x, z);
+            if let Ok(new_location) = new_location {
+                let position_in_table = chunk.table_index;
 
                 // Append to the location table
                 let location_bytes = new_location.to_location_bytes();
@@ -87,8 +84,7 @@ impl Region {
                 timestamp_table[position_in_table..(4 + position_in_table)]
                     .copy_from_slice(&timestamp_bytes);
             }
-            // Else, the chunk is probably invalid, we can ignore it
-            // FIXME: We might not want to loose the corrupted chunk
+            // If the location cannot be created, skip the chunk to avoid corrupt output
 
             data.extend(serialized);
         }
@@ -127,10 +123,6 @@ impl Region {
 fn align_vec_size(vec: &mut Vec<u8>) {
     let aligned_size = vec.len().div_ceil(4096) * 4096;
     vec.resize(aligned_size, 0);
-}
-
-fn get_position_in_table(x: i32, z: i32) -> usize {
-    (4 * ((x & 31) + (z & 31) * 32)) as usize
 }
 
 fn try_read_bytes(file_path: &PathBuf) -> std::io::Result<Vec<u8>> {
@@ -179,10 +171,16 @@ mod tests {
 
         // Assert the chunk data is unchanged
         for i in 0..original_chunks.len() {
-            let original_chunk = &original_chunks[i];
-            let parsed_chunk = &parsed_chunks[i];
-            // We cannot check for equality on the location since it might have different offset and size
-            assert_eq!(original_chunk.nbt, parsed_chunk.nbt);
+            match (&original_chunks[i].data, &parsed_chunks[i].data) {
+                (
+                    crate::region_loader::chunk_loader::chunk::ChunkData::Parsed(a),
+                    crate::region_loader::chunk_loader::chunk::ChunkData::Parsed(b),
+                ) => {
+                    // We cannot check for equality on the location since it might have different offset and size
+                    assert_eq!(a, b);
+                }
+                _ => panic!("expected parsed chunks"),
+            }
         }
     }
 }

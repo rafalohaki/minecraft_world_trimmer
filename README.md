@@ -25,8 +25,8 @@ The trimmer operates in-place, replacing original region files with trimmed ones
 ## Supported Compression Algorithms
 
 Minecraft supports several compression algorithms for chunk data inside the region files. The Minecraft World Trimmer
-currently only supports the deflate compression algorithm, Zlib and GZip, as deflate is the default for most clients and
-servers. If your world uses a different compression method, you may experience **data loss**.
+supports the deflate compression algorithm (Zlib and GZip) and LZ4. Any other compression method will be preserved
+but not modified.
 
 The Minecraft World Trimmer has only been successfully tested on 1.20.6 and 1.21 vanilla worlds.
 
