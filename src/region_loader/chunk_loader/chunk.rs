@@ -4,8 +4,8 @@ use crate::nbt::tag::Tag;
 use crate::region_loader::chunk_loader::compression_scheme::CompressionScheme;
 use crate::region_loader::get_u32::get_u32;
 use crate::region_loader::location::Location;
-use flate2::read::{GzDecoder, ZlibDecoder, ZlibEncoder};
 use flate2::Compression;
+use flate2::read::{GzDecoder, ZlibDecoder, ZlibEncoder};
 use std::io::Read;
 
 #[derive(PartialEq, Debug, Clone)]

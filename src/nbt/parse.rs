@@ -81,7 +81,7 @@ mod tests {
                                 Tag::Float {
                                     name: Some(String::from("value")),
                                     value: 0.75,
-                                }
+                                },
                             ]),
                         },
                         Tag::Compound {
@@ -94,7 +94,7 @@ mod tests {
                                 Tag::Float {
                                     name: Some(String::from("value")),
                                     value: 0.5,
-                                }
+                                },
                             ]),
                         },
                     ]),
@@ -162,7 +162,9 @@ mod tests {
                     value: 127,
                 },
                 Tag::ByteArray {
-                    name: Some(String::from("byteArrayTest (the first 1000 values of (n*n*255+n*7)%100, starting with n=0 (0, 62, 34, 16, 8, ...))")),
+                    name: Some(String::from(
+                        "byteArrayTest (the first 1000 values of (n*n*255+n*7)%100, starting with n=0 (0, 62, 34, 16, 8, ...))",
+                    )),
                     value,
                 },
                 Tag::Double {

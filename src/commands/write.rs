@@ -1,4 +1,4 @@
-use crate::commands::optimize_result::{reduce_optimize_results, OptimizeResult};
+use crate::commands::optimize_result::{OptimizeResult, reduce_optimize_results};
 use crate::region_loader::region::Region;
 use crate::world::get_region_files::get_region_files;
 use flate2::Compression;

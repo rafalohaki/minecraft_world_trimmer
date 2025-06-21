@@ -1,5 +1,5 @@
 use crate::nbt::writers::{
-    size_to_i32_bytes, write_array_i32, write_array_i64, write_array_i8, write_string,
+    size_to_i32_bytes, write_array_i8, write_array_i32, write_array_i64, write_string,
 };
 
 #[derive(PartialEq, Debug, Clone)]
