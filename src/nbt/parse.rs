@@ -62,7 +62,7 @@ mod tests {
                 },
                 Tag::Float {
                     name: Some(String::from("floatTest")),
-                    value: 0.498_231_470_584_869_38_f32,
+                    value: 0.498_231_47_f32,
                 },
                 Tag::Int {
                     name: Some(String::from("intTest")),
@@ -169,7 +169,7 @@ mod tests {
                 },
                 Tag::Double {
                     name: Some(String::from("doubleTest")),
-                    value: 0.493_128_713_218_231_48_f64,
+                    value: 0.493_128_713_218_231_5_f64,
                 },
             ]),
         };
