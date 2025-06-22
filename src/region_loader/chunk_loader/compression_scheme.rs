@@ -1,6 +1,9 @@
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum CompressionScheme {
     Gzip,
     Zlib,
+    Lz4,
+    Unknown(u8),
 }
 
 impl CompressionScheme {
@@ -8,7 +11,8 @@ impl CompressionScheme {
         match byte {
             1 => Ok(CompressionScheme::Gzip),
             2 => Ok(CompressionScheme::Zlib),
-            _ => Err("Unsupported compression scheme"),
+            4 => Ok(CompressionScheme::Lz4),
+            _ => Ok(CompressionScheme::Unknown(byte)),
         }
     }
 
@@ -16,6 +20,8 @@ impl CompressionScheme {
         match self {
             CompressionScheme::Gzip => 1,
             CompressionScheme::Zlib => 2,
+            CompressionScheme::Lz4 => 4,
+            CompressionScheme::Unknown(v) => *v,
         }
     }
 }

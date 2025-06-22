@@ -4,14 +4,17 @@ use crate::nbt::tag::Tag;
 use crate::region_loader::chunk_loader::compression_scheme::CompressionScheme;
 use crate::region_loader::get_u32::get_u32;
 use crate::region_loader::location::Location;
-use flate2::Compression;
 use flate2::read::{GzDecoder, ZlibDecoder, ZlibEncoder};
+use flate2::Compression;
+use lz4_flex::{block::compress_prepend_size as lz4_compress, block::decompress_size_prepended as lz4_decompress};
 use std::io::Read;
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct Chunk {
-    pub nbt: Tag,
+    pub nbt: Option<Tag>,
     pub location: Location,
+    pub compression_scheme: CompressionScheme,
+    raw_bytes: Option<Vec<u8>>, // Used when the compression scheme is unsupported
 }
 
 impl Chunk {
@@ -45,34 +48,60 @@ impl Chunk {
                 let mut bytes = Vec::new();
                 decoder.read_to_end(&mut bytes).map(|_| bytes)
             }
+            CompressionScheme::Lz4 => {
+                lz4_decompress(raw_first_chunk)
+                    .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "lz4 error"))
+            }
+            CompressionScheme::Unknown(_) => Ok(raw_first_chunk.to_vec()),
         };
 
-        // Convert to string
-        let nbt = decoded_bytes
-            .map(|bytes| {
+        match (decoded_bytes, compression_scheme) {
+            (Ok(bytes), CompressionScheme::Unknown(_)) => Ok(Self { nbt: None, location, compression_scheme, raw_bytes: Some(bytes) }),
+            (Ok(bytes), scheme) => {
                 let mut binary_reader = BinaryReader::new(&bytes);
-                parse_tag(&mut binary_reader)
-            })
-            .map_err(|_| "Error while parsing NBT")?;
-
-        Ok(Self { nbt, location })
+                let nbt = parse_tag(&mut binary_reader);
+                Ok(Self { nbt: Some(nbt), location, compression_scheme: scheme, raw_bytes: None })
+            }
+            (Err(_), _) => Err("Error while parsing chunk"),
+        }
     }
 
     pub fn to_bytes(&self, compression: Compression) -> Vec<u8> {
-        let decoded_bytes = self.nbt.to_bytes();
-
-        let mut encoder = ZlibEncoder::new(&decoded_bytes[..], compression);
-        let mut bytes = Vec::new();
-        if let Ok(encoded_bytes) = encoder.read_to_end(&mut bytes).map(|_| bytes) {
-            self.to_bytes_compression_scheme(CompressionScheme::Zlib, &encoded_bytes)
-        } else {
-            self.to_bytes_compression_scheme(CompressionScheme::Zlib, &decoded_bytes)
+        match (&self.nbt, &self.raw_bytes, self.compression_scheme) {
+            (Some(nbt), _, CompressionScheme::Gzip) => {
+                let decoded_bytes = nbt.to_bytes();
+                let mut encoder = flate2::read::GzEncoder::new(&decoded_bytes[..], compression);
+                let mut bytes = Vec::new();
+                if let Ok(encoded_bytes) = encoder.read_to_end(&mut bytes).map(|_| bytes) {
+                    self.to_bytes_compression_scheme(CompressionScheme::Gzip, &encoded_bytes)
+                } else {
+                    self.to_bytes_compression_scheme(CompressionScheme::Gzip, &decoded_bytes)
+                }
+            }
+            (Some(nbt), _, CompressionScheme::Zlib) => {
+                let decoded_bytes = nbt.to_bytes();
+                let mut encoder = ZlibEncoder::new(&decoded_bytes[..], compression);
+                let mut bytes = Vec::new();
+                if let Ok(encoded_bytes) = encoder.read_to_end(&mut bytes).map(|_| bytes) {
+                    self.to_bytes_compression_scheme(CompressionScheme::Zlib, &encoded_bytes)
+                } else {
+                    self.to_bytes_compression_scheme(CompressionScheme::Zlib, &decoded_bytes)
+                }
+            }
+            (Some(nbt), _, CompressionScheme::Lz4) => {
+                let decoded_bytes = nbt.to_bytes();
+                let encoded = lz4_compress(&decoded_bytes);
+                self.to_bytes_compression_scheme(CompressionScheme::Lz4, &encoded)
+            }
+            (None, Some(raw), scheme) => self.to_bytes_compression_scheme(scheme, raw),
+            _ => Vec::new(),
         }
     }
 
     pub fn get_position(&self) -> Result<(i32, i32), &'static str> {
-        let x_pos_tag = self.nbt.find_tag("xPos").and_then(|v| v.get_int());
-        let z_pos_tag = self.nbt.find_tag("zPos").and_then(|v| v.get_int());
+        let nbt = self.nbt.as_ref().ok_or("No position for this chunk")?;
+        let x_pos_tag = nbt.find_tag("xPos").and_then(|v| v.get_int());
+        let z_pos_tag = nbt.find_tag("zPos").and_then(|v| v.get_int());
 
         match (x_pos_tag, z_pos_tag) {
             (Some(x), Some(z)) => Ok((*x, *z)),
@@ -86,21 +115,24 @@ impl Chunk {
     }
 
     fn is_fully_generated(&self) -> bool {
-        self.nbt
-            .find_tag("Status")
+        self
+            .nbt
+            .as_ref()
+            .and_then(|nbt| nbt.find_tag("Status"))
             .and_then(|tag| tag.get_string())
             .map(|status| status == Chunk::STATUS_FULL)
-            .unwrap_or(false) // if the tag is not present, we can assume that the chunk is not fully generated
+            .unwrap_or(false)
     }
 
     fn has_been_inhabited(&self) -> bool {
         // The InhabitedTime value seems to be incremented for all 8 chunks around a player (including the one the player is standing in)
         let inhabited_time = self
             .nbt
-            .find_tag("InhabitedTime")
+            .as_ref()
+            .and_then(|nbt| nbt.find_tag("InhabitedTime"))
             .and_then(|tag| tag.get_long())
             .copied()
-            .unwrap_or(0); // If the tag is not present, we can assume that the chunk has never been inhabited
+            .unwrap_or(0);
 
         inhabited_time > 0
     }
