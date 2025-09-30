@@ -1,5 +1,5 @@
 use crate::commands::optimize_result::{reduce_optimize_results, OptimizeResult};
-use crate::region_loader::region::Region;
+use crate::region_loader::region::{ParseRegionError, Region};
 use crate::world::get_region_files::get_region_files;
 use flate2::Compression;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -66,10 +66,17 @@ fn optimize_write(
                 std::fs::write(region_file_path, bytes)?;
             }
         }
-        Err(_) => {
-            result.deleted_regions += 1;
-            std::fs::remove_file(region_file_path)?;
-        }
+        Err(err) => match err {
+            ParseRegionError::HeaderError => {
+                // Plik ma uszkodzony nagłówek, można bezpiecznie usunąć
+                result.deleted_regions += 1;
+                std::fs::remove_file(region_file_path)?;
+            }
+            ParseRegionError::ReadError => {
+                // Błąd I/O – nie usuwaj pliku, tylko zlicz błąd
+                result.io_errors += 1;
+            }
+        },
     }
 
     Ok(result)

@@ -5,6 +5,7 @@ pub struct OptimizeResult {
     pub total_chunks: usize,
     pub deleted_chunks: usize,
     pub deleted_regions: usize,
+    pub io_errors: usize,
 }
 
 impl Display for OptimizeResult {
@@ -14,8 +15,9 @@ impl Display for OptimizeResult {
             "Optimization Result:\n\
                    Total Chunks: {}\n\
                    Deleted Chunks: {}\n\
-                   Deleted Regions: {}",
-            self.total_chunks, self.deleted_chunks, self.deleted_regions
+                   Deleted Regions: {}\n\
+                   I/O Errors: {}",
+            self.total_chunks, self.deleted_chunks, self.deleted_regions, self.io_errors
         )
     }
 }
@@ -27,6 +29,7 @@ pub fn reduce_optimize_results(results: &mut [OptimizeResult]) -> OptimizeResult
             acc.deleted_regions += cur.deleted_regions;
             acc.total_chunks += cur.total_chunks;
             acc.deleted_chunks += cur.deleted_chunks;
+            acc.io_errors += cur.io_errors;
             acc
         })
         .cloned()

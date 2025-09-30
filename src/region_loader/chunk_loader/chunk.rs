@@ -4,7 +4,7 @@ use crate::nbt::tag::Tag;
 use crate::region_loader::chunk_loader::compression_scheme::CompressionScheme;
 use crate::region_loader::get_u32::get_u32;
 use crate::region_loader::location::Location;
-use flate2::read::{GzDecoder, ZlibDecoder, ZlibEncoder};
+use flate2::read::{GzDecoder, GzEncoder, ZlibDecoder, ZlibEncoder};
 use flate2::Compression;
 use lz4_flex::frame::FrameDecoder;
 use std::io::Read;
@@ -19,19 +19,32 @@ impl Chunk {
     const STATUS_FULL: &'static str = "minecraft:full";
 
     pub fn from_location(buf: &[u8], location: Location) -> Result<Self, &'static str> {
-        // Chunk header parsing
-        // First get the chunk size in bytes
+        // Chunk header parsing z ochroną zakresów
         let offset = location.get_offset() as usize;
-        let chunk_size = get_u32(buf, offset) as usize;
 
-        // Then get the compression scheme
+        // Sprawdź dostępność 4 bajtów rozmiaru
+        if offset + 4 > buf.len() {
+            return Err("Chunk header out of bounds");
+        }
+        let chunk_size = get_u32(buf, offset) as usize;
+        if chunk_size == 0 {
+            return Err("Invalid chunk size (zero)");
+        }
+
+        // Bajt schematu kompresji
         let compression_scheme_index = offset + 4;
+        if compression_scheme_index >= buf.len() {
+            return Err("Compression scheme out of bounds");
+        }
         let compression_scheme = CompressionScheme::from_u8(buf[compression_scheme_index])?;
 
-        // Get the raw chunk data
-        let header_size = 5; // This can be a const
+        // Dane chunka: payload ma długość (chunk_size - 1)
+        let header_size = 5; // 4 bajty rozmiaru + 1 bajt schematu
         let start = offset + header_size;
-        let end = start + chunk_size - 1; // Remove 1 because the compression_scheme is included in the size
+        let end = start + chunk_size - 1; // end jest ekskluzywne w slicingu
+        if start > end || end > buf.len() {
+            return Err("Chunk payload out of bounds");
+        }
         let raw_first_chunk = &buf[start..end];
 
         // Depending on the compression scheme, read the data
@@ -47,9 +60,17 @@ impl Chunk {
                 decoder.read_to_end(&mut bytes).map(|_| bytes)
             }
             CompressionScheme::Lz4 => {
+                // Najpierw próbujemy dekodera "frame"
                 let mut decoder = FrameDecoder::new(raw_first_chunk);
                 let mut bytes = Vec::new();
-                decoder.read_to_end(&mut bytes).map(|_| bytes)
+                match decoder.read_to_end(&mut bytes) {
+                    Ok(_) => Ok(bytes),
+                    Err(_) => {
+                        // Fallback: spróbuj trybu "block" z rozmiarem poprzedzającym (size-prepended)
+                        lz4_flex::block::decompress_size_prepended(raw_first_chunk)
+                            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "LZ4 block decompress failed"))
+                    }
+                }
             }
         };
 
@@ -66,13 +87,20 @@ impl Chunk {
 
     pub fn to_bytes(&self, compression: Compression) -> Vec<u8> {
         let decoded_bytes = self.nbt.to_bytes();
-
-        let mut encoder = ZlibEncoder::new(&decoded_bytes[..], compression);
-        let mut bytes = Vec::new();
-        if let Ok(encoded_bytes) = encoder.read_to_end(&mut bytes).map(|_| bytes) {
-            self.to_bytes_compression_scheme(CompressionScheme::Zlib, &encoded_bytes)
-        } else {
-            self.to_bytes_compression_scheme(CompressionScheme::Zlib, &decoded_bytes)
+        // Try Zlib first; if it fails, fall back to Gzip to avoid writing
+        // mismatched compression scheme with uncompressed data.
+        let mut zlib_encoder = ZlibEncoder::new(&decoded_bytes[..], compression);
+        let mut zlib_bytes = Vec::new();
+        match zlib_encoder.read_to_end(&mut zlib_bytes) {
+            Ok(_) => self.to_bytes_compression_scheme(CompressionScheme::Zlib, &zlib_bytes),
+            Err(_) => {
+                let mut gzip_encoder = GzEncoder::new(&decoded_bytes[..], compression);
+                let mut gzip_bytes = Vec::new();
+                match gzip_encoder.read_to_end(&mut gzip_bytes) {
+                    Ok(_) => self.to_bytes_compression_scheme(CompressionScheme::Gzip, &gzip_bytes),
+                    Err(_) => self.to_bytes_compression_scheme(CompressionScheme::Zlib, &decoded_bytes),
+                }
+            }
         }
     }
 
