@@ -6,6 +6,7 @@ use crate::region_loader::get_u32::get_u32;
 use crate::region_loader::location::Location;
 use flate2::read::{GzDecoder, ZlibDecoder, ZlibEncoder};
 use flate2::Compression;
+use lz4_flex::frame::FrameDecoder;
 use std::io::Read;
 
 #[derive(PartialEq, Debug, Clone)]
@@ -42,6 +43,11 @@ impl Chunk {
             }
             CompressionScheme::Zlib => {
                 let mut decoder = ZlibDecoder::new(raw_first_chunk);
+                let mut bytes = Vec::new();
+                decoder.read_to_end(&mut bytes).map(|_| bytes)
+            }
+            CompressionScheme::Lz4 => {
+                let mut decoder = FrameDecoder::new(raw_first_chunk);
                 let mut bytes = Vec::new();
                 decoder.read_to_end(&mut bytes).map(|_| bytes)
             }
