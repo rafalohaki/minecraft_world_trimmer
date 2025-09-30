@@ -11,7 +11,7 @@ use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
 pub fn execute_write(
-    world_paths: &Vec<PathBuf>,
+    world_paths: &[PathBuf],
     compression: Compression,
 ) -> Result<(), Box<dyn Error>> {
     let entries = get_region_files(world_paths)?;
@@ -64,11 +64,36 @@ fn optimize_write(
                 std::fs::remove_file(region_file_path)?;
             } else if region.is_modified() {
                 // Only write the region file if it has been modified
-                let bytes = region.to_bytes(compression);
-                let file = File::create(region_file_path)?;
-                // Use a buffered writer to reduce syscall overhead; 32 MB buffer
-                let mut writer = BufWriter::with_capacity(32 * 1024 * 1024, file);
-                writer.write_all(&bytes)?;
+                match region.to_bytes(compression) {
+                    Ok(bytes) => {
+                        let file = File::create(region_file_path)?;
+                        // Use a buffered writer to reduce syscall overhead; 32 MB buffer
+                        let mut writer = BufWriter::with_capacity(32 * 1024 * 1024, file);
+                        writer.write_all(&bytes)?;
+                        let fallbacks = region.get_compression_fallbacks();
+                        if fallbacks > 0 {
+                            result.compression_failures += fallbacks;
+                            result.regions_with_compression_issues += 1;
+                            eprintln!(
+                                "Compression fallback in {} chunk(s) for {:?}",
+                                fallbacks, region_file_path
+                            );
+                        }
+                        let header_failures = region.get_header_write_failures();
+                        if header_failures > 0 {
+                            result.header_write_failures += header_failures;
+                            result.regions_with_header_issues += 1;
+                            eprintln!(
+                                "Header write failure: skipped payload for {} chunk(s) in {:?}",
+                                header_failures, region_file_path
+                            );
+                        }
+                    }
+                    Err(_) => {
+                        // Leave region file unchanged when compression fails for a chunk
+                        // Do not count as I/O error; simply skip writing.
+                    }
+                }
             }
         }
         Err(err) => match err {

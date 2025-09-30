@@ -7,7 +7,7 @@ use rayon::prelude::IntoParallelRefIterator;
 use std::error::Error;
 use std::path::PathBuf;
 
-pub fn execute_read(world_paths: &Vec<PathBuf>) -> Result<(), Box<dyn Error>> {
+pub fn execute_read(world_paths: &[PathBuf]) -> Result<(), Box<dyn Error>> {
     let entries = get_region_files(world_paths)?;
     let pb = ProgressBar::new(entries.len() as u64);
     let style = ProgressStyle::with_template(

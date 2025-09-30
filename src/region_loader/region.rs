@@ -11,6 +11,10 @@ use thiserror::Error;
 pub struct Region {
     chunks: Vec<Chunk>,
     is_modified: bool,
+    // Liczba chunków, dla których użyto oryginalnych bajtów z powodu błędu kompresji
+    compression_fallbacks: usize,
+    // Liczba chunków pominiętych w payload z powodu błędów nagłówka (brak pozycji/location)
+    header_write_failures: usize,
 }
 
 #[derive(Error, Debug)]
@@ -53,17 +57,26 @@ impl Region {
         Ok(Self {
             chunks,
             is_modified: false,
+            compression_fallbacks: 0,
+            header_write_failures: 0,
         })
     }
 
-    pub fn to_bytes(&self, compression: Compression) -> Vec<u8> {
+    pub fn to_bytes(&mut self, compression: Compression) -> Result<Vec<u8>, &'static str> {
         let mut data = Vec::new();
         let mut location_table = [0_u8; 4096];
         let mut timestamp_table = [0_u8; 4096];
 
         for chunk in &self.chunks {
             // Serialize the chunk to bytes
-            let mut serialized = chunk.to_bytes(compression);
+            let mut serialized = match chunk.to_bytes(compression) {
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    // Fallback: użyj oryginalnych bajtów chunka i zanotuj przypadek
+                    self.compression_fallbacks += 1;
+                    chunk.to_original_bytes()
+                }
+            };
             align_vec_size(&mut serialized);
 
             // Build the new location
@@ -86,18 +99,29 @@ impl Region {
                 let timestamp_bytes = new_location.to_timestamp_bytes();
                 timestamp_table[position_in_table..(4 + position_in_table)]
                     .copy_from_slice(&timestamp_bytes);
-            }
-            // Else, the chunk is probably invalid, we can ignore it
-            // FIXME: We might not want to loose the corrupted chunk
 
-            data.extend(serialized);
+                // Only append payload when header entry is valid
+                data.extend(serialized);
+            } else {
+                // Do not append payload if we cannot produce a valid header entry
+                // Count this as a header write failure for visibility in metrics
+                self.header_write_failures += 1;
+            }
         }
 
         let mut result = Vec::new();
         result.extend_from_slice(&location_table);
         result.extend_from_slice(&timestamp_table);
         result.extend(data);
-        result
+        Ok(result)
+    }
+
+    pub fn get_compression_fallbacks(&self) -> usize {
+        self.compression_fallbacks
+    }
+
+    pub fn get_header_write_failures(&self) -> usize {
+        self.header_write_failures
     }
 
     pub fn get_chunks(&self) -> &Vec<Chunk> {
@@ -172,8 +196,10 @@ mod tests {
         let original_bytes = include_bytes!("../../test_files/r.-1.-1.mca");
 
         // Parse the region file
-        let original_parsed_region_file = Region::from_bytes(original_bytes).unwrap();
-        let serialized_bytes = original_parsed_region_file.to_bytes(Compression::fast());
+        let mut original_parsed_region_file = Region::from_bytes(original_bytes).unwrap();
+        let serialized_bytes = original_parsed_region_file
+            .to_bytes(Compression::fast())
+            .unwrap();
 
         // Wa cannot validate the header as the compression and chunk order in the payload may differ
         // resulting in a modification of the offset bytes, so as long as the re-parsed region file is

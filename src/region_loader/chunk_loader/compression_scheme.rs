@@ -1,3 +1,4 @@
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CompressionScheme {
     Gzip,
     Zlib,

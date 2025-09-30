@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
-pub fn validate_worlds(world_paths: &Vec<PathBuf>) -> Result<&Vec<PathBuf>, ValidateWorldError> {
+pub fn validate_worlds(world_paths: &[PathBuf]) -> Result<&[PathBuf], ValidateWorldError> {
     for world in world_paths {
         validate_world(world)?;
     }

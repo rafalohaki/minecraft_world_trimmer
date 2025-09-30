@@ -24,9 +24,24 @@ The trimmer operates in-place, replacing original region files with trimmed ones
 
 ## Supported Compression Algorithms
 
-Minecraft supports several compression algorithms for chunk data inside the region files. The Minecraft World Trimmer
-currently only supports the deflate compression algorithm, Zlib and GZip, as deflate is the default for most clients and
-servers. If your world uses a different compression method, you may experience **data loss**.
+Minecraft stores chunk data in region files using multiple compression schemes.
+
+- Read support: `Zlib`, `GZip`, and `LZ4`.
+  - LZ4 is supported both as framed (`lz4 frame`) and as size-prepended block payloads. If framed decoding fails, we
+    automatically fall back to size-prepended block decoding.
+- Write (recompression) behavior:
+  - By default, chunks are re-serialized and compressed using `Zlib` (falling back to `GZip` if `Zlib` fails) according
+    to the configured compression level.
+  - If recompression fails for a chunk, we do not drop your data: the original compressed bytes and their compression
+    scheme are preserved and written back verbatim (including `LZ4` payloads). This is a fallback path intended to keep
+    worlds safe.
+
+Important:
+- We do not proactively recompress chunks to `LZ4`. LZ4 appears only when the original chunk was already LZ4-compressed
+  and we take the fallback path that preserves original bytes.
+- Worlds using custom or unsupported compression schemes may still be at risk. While we do our best to decode
+  recognized formats and preserve original bytes on errors, unusual formats could lead to skipped recompression or
+  removal in trimming scenarios. Always keep backups.
 
 The Minecraft World Trimmer has only been successfully tested on 1.20.6 and 1.21 vanilla worlds.
 

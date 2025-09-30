@@ -2,7 +2,7 @@ use crate::world::validate::validate_worlds;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
-pub fn get_region_files(world_paths: &Vec<PathBuf>) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+pub fn get_region_files(world_paths: &[PathBuf]) -> Result<Vec<PathBuf>, Box<dyn Error>> {
     let worlds = validate_worlds(world_paths)?;
     Ok(worlds
         .iter()

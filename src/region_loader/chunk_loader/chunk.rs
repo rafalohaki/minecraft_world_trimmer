@@ -13,6 +13,9 @@ use std::io::Read;
 pub struct Chunk {
     pub nbt: Tag,
     pub location: Location,
+    // Original compressed payload and its scheme, used when recompression fails
+    original_compression_scheme: CompressionScheme,
+    original_payload: Vec<u8>,
 }
 
 impl Chunk {
@@ -46,6 +49,7 @@ impl Chunk {
             return Err("Chunk payload out of bounds");
         }
         let raw_first_chunk = &buf[start..end];
+        let original_payload = raw_first_chunk.to_vec();
 
         // Depending on the compression scheme, read the data
         let decoded_bytes = match compression_scheme {
@@ -82,23 +86,28 @@ impl Chunk {
             })
             .map_err(|_| "Error while parsing NBT")?;
 
-        Ok(Self { nbt, location })
+        Ok(Self {
+            nbt,
+            location,
+            original_compression_scheme: compression_scheme,
+            original_payload,
+        })
     }
 
-    pub fn to_bytes(&self, compression: Compression) -> Vec<u8> {
+    pub fn to_bytes(&self, compression: Compression) -> Result<Vec<u8>, &'static str> {
         let decoded_bytes = self.nbt.to_bytes();
-        // Try Zlib first; if it fails, fall back to Gzip to avoid writing
-        // mismatched compression scheme with uncompressed data.
+        // Try Zlib first; if it fails, fall back to Gzip. If both fail,
+        // do not write mismatched header/payload — propagate error to leave chunk unchanged.
         let mut zlib_encoder = ZlibEncoder::new(&decoded_bytes[..], compression);
         let mut zlib_bytes = Vec::new();
         match zlib_encoder.read_to_end(&mut zlib_bytes) {
-            Ok(_) => self.to_bytes_compression_scheme(CompressionScheme::Zlib, &zlib_bytes),
+            Ok(_) => Ok(self.to_bytes_compression_scheme(CompressionScheme::Zlib, &zlib_bytes)),
             Err(_) => {
                 let mut gzip_encoder = GzEncoder::new(&decoded_bytes[..], compression);
                 let mut gzip_bytes = Vec::new();
                 match gzip_encoder.read_to_end(&mut gzip_bytes) {
-                    Ok(_) => self.to_bytes_compression_scheme(CompressionScheme::Gzip, &gzip_bytes),
-                    Err(_) => self.to_bytes_compression_scheme(CompressionScheme::Zlib, &decoded_bytes),
+                    Ok(_) => Ok(self.to_bytes_compression_scheme(CompressionScheme::Gzip, &gzip_bytes)),
+                    Err(_) => Err("Compression failed for both Zlib and Gzip"),
                 }
             }
         }
@@ -114,9 +123,9 @@ impl Chunk {
         }
     }
 
-    /// Checks if a chunk is not fully generated or if it has never been inhabited
+    /// Checks if a chunk is not fully generated and has never been inhabited
     pub fn should_delete(&self) -> bool {
-        !self.is_fully_generated() || !self.has_been_inhabited()
+        !self.is_fully_generated() && !self.has_been_inhabited()
     }
 
     fn is_fully_generated(&self) -> bool {
@@ -137,6 +146,10 @@ impl Chunk {
             .unwrap_or(0); // If the tag is not present, we can assume that the chunk has never been inhabited
 
         inhabited_time > 0
+    }
+
+    pub fn to_original_bytes(&self) -> Vec<u8> {
+        self.to_bytes_compression_scheme(self.original_compression_scheme, &self.original_payload)
     }
 
     fn to_bytes_compression_scheme(

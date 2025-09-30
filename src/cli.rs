@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(
-    name = "minecraft_world_optimizer",
+    name = "minecraft_world_trimmer",
     version = "1.0",
     about = "Optimizing Minecraft worlds by deleting unused region files and chunks.",
     long_about = None,
