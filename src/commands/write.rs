@@ -6,6 +6,8 @@ use indicatif::{ProgressBar, ProgressStyle};
 use rayon::iter::ParallelIterator;
 use rayon::prelude::IntoParallelRefIterator;
 use std::error::Error;
+use std::fs::File;
+use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
 pub fn execute_write(
@@ -63,7 +65,10 @@ fn optimize_write(
             } else if region.is_modified() {
                 // Only write the region file if it has been modified
                 let bytes = region.to_bytes(compression);
-                std::fs::write(region_file_path, bytes)?;
+                let file = File::create(region_file_path)?;
+                // Use a buffered writer to reduce syscall overhead; 32 MB buffer
+                let mut writer = BufWriter::with_capacity(32 * 1024 * 1024, file);
+                writer.write_all(&bytes)?;
             }
         }
         Err(err) => match err {

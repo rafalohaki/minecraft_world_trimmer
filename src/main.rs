@@ -9,9 +9,15 @@ use crate::commands::read::execute_read;
 use crate::commands::write::execute_write;
 use clap::Parser;
 use flate2::Compression;
+use rayon::ThreadPoolBuilder;
 
 fn main() {
     let cli = Cli::parse();
+
+    // Configure Rayon threads dynamically: CPU count minus 2, at least 1
+    let cpus = num_cpus::get();
+    let threads = cpus.saturating_sub(2).max(1);
+    let _ = ThreadPoolBuilder::new().num_threads(threads).build_global();
 
     let result = match cli.mode {
         Mode::Write => execute_write(&cli.world_paths, Compression::new(cli.compression_level)),

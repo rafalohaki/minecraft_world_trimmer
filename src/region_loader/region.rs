@@ -3,7 +3,7 @@ use crate::region_loader::get_u32::get_u32;
 use crate::region_loader::location::Location;
 use flate2::Compression;
 use std::fs::File;
-use std::io::Read;
+use std::io::{BufReader, Read};
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -134,8 +134,17 @@ fn get_position_in_table(x: i32, z: i32) -> usize {
 }
 
 fn try_read_bytes(file_path: &PathBuf) -> std::io::Result<Vec<u8>> {
-    let mut buf = Vec::<u8>::new();
-    File::open(file_path).and_then(|mut file| file.read_to_end(&mut buf))?;
+    // Preallocate buffer up to file size, capped to 1 GB to avoid excessive RAM usage
+    let estimated_len = std::fs::metadata(file_path)
+        .map(|m| m.len() as usize)
+        .unwrap_or(0)
+        .min(1_000_000_000);
+
+    let file = File::open(file_path)?;
+    let mut buf = Vec::with_capacity(estimated_len);
+    // Use a buffered reader to reduce syscall overhead on large files
+    let mut reader = BufReader::with_capacity(8 * 1024 * 1024, file);
+    reader.read_to_end(&mut buf)?;
     Ok(buf)
 }
 
