@@ -18,12 +18,11 @@ pub fn execute_read(world_paths: &Vec<PathBuf>) -> Result<(), Box<dyn Error>> {
 
     let mut results = entries
         .par_iter()
-        .map(|entry| {
+        .filter_map(|entry| {
             let result = optimize_read(entry);
             pb.inc(1);
-            result
+            result.ok()
         })
-        .flatten()
         .collect::<Vec<OptimizeResult>>();
 
     let result = reduce_optimize_results(&mut results);

@@ -22,10 +22,10 @@ pub fn execute_write(
 
     let mut results = entries
         .par_iter()
-        .flat_map(|entry| {
+        .filter_map(|entry| {
             let result = optimize_write(entry, compression);
             pb.inc(1);
-            result
+            result.ok()
         })
         .collect::<Vec<OptimizeResult>>();
 
