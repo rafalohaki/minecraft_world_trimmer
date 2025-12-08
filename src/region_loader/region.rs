@@ -62,6 +62,7 @@ impl Region {
         })
     }
 
+    #[allow(clippy::wrong_self_convention)]
     pub fn to_bytes(&mut self, compression: Compression) -> Result<Vec<u8>, &'static str> {
         let mut data = Vec::new();
         let mut location_table = [0_u8; 4096];

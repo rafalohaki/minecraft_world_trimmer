@@ -15,7 +15,7 @@ impl CompressionScheme {
         }
     }
 
-    pub fn to_u8(&self) -> u8 {
+    pub fn to_u8(self) -> u8 {
         match self {
             CompressionScheme::Gzip => 1,
             CompressionScheme::Zlib => 2,
