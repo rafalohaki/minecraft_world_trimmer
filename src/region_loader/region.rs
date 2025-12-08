@@ -196,17 +196,19 @@ mod tests {
         let original_bytes = include_bytes!("../../test_files/r.-1.-1.mca");
 
         // Parse the region file
-        let mut original_parsed_region_file = Region::from_bytes(original_bytes).unwrap();
+        let mut original_parsed_region_file = Region::from_bytes(original_bytes)
+            .expect("Failed to parse original region file");
         let serialized_bytes = original_parsed_region_file
             .to_bytes(Compression::fast())
-            .unwrap();
+            .expect("Failed to serialize region file");
 
-        // Wa cannot validate the header as the compression and chunk order in the payload may differ
+        // We cannot validate the header as the compression and chunk order in the payload may differ
         // resulting in a modification of the offset bytes, so as long as the re-parsed region file is
         // the same as the parsed original, we should be fine
 
         // Try parsing again the serialized region file and check if both still have the same chunk data
-        let parsed_again = Region::from_bytes(&serialized_bytes).unwrap();
+        let parsed_again = Region::from_bytes(&serialized_bytes)
+            .expect("Failed to parse serialized region file");
 
         let original_chunks = original_parsed_region_file.get_chunks();
         let parsed_chunks = parsed_again.get_chunks();

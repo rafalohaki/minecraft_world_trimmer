@@ -1,9 +1,9 @@
 use crate::nbt::binary_reader::BinaryReader;
-use crate::nbt::parsers::parse_with_type::parse_with_type;
+use crate::nbt::parsers::parse_with_type::{parse_with_type, NbtError};
 use crate::nbt::tag::Tag;
 
-pub fn parse_tag(reader: &mut BinaryReader) -> Tag {
-    let tag_type = reader.read_type();
+pub fn parse_tag(reader: &mut BinaryReader) -> Result<Tag, NbtError> {
+    let tag_type = reader.read_type()?;
     parse_with_type(reader, tag_type, false)
 }
 
@@ -15,7 +15,7 @@ mod tests {
     fn test_hello_world() {
         let data = include_bytes!("../../test_files/hello_world.nbt");
         let mut reader = BinaryReader::new(data);
-        let result = parse_tag(&mut reader);
+        let result = parse_tag(&mut reader).unwrap();
 
         assert_eq!(
             result,
@@ -36,7 +36,7 @@ mod tests {
     fn test_bigtest() {
         let data = include_bytes!("../../test_files/bigtest.nbt");
         let mut reader = BinaryReader::new(data);
-        let result = parse_tag(&mut reader);
+        let result = parse_tag(&mut reader).unwrap();
 
         // Build the ByteArray
         let mut value = Vec::new();

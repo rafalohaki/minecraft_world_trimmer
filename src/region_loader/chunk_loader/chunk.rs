@@ -80,9 +80,13 @@ impl Chunk {
 
         // Convert to string
         let nbt = decoded_bytes
-            .map(|bytes| {
+            .and_then(|bytes| {
                 let mut binary_reader = BinaryReader::new(&bytes);
                 parse_tag(&mut binary_reader)
+                    .map_err(|e| std::io::Error::new(
+                        std::io::ErrorKind::InvalidData, 
+                        format!("NBT parse error: {}", e)
+                    ))
             })
             .map_err(|_| "Error while parsing NBT")?;
 

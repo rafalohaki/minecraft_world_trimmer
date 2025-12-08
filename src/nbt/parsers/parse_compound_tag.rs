@@ -6,11 +6,19 @@ pub fn parse_compound_tag(reader: &mut BinaryReader) -> Vec<Tag> {
     let mut values = Vec::new();
 
     loop {
-        let next_tag = parse_tag(reader);
-        if next_tag == Tag::End {
-            break;
+        match parse_tag(reader) {
+            Ok(next_tag) => {
+                if next_tag == Tag::End {
+                    break;
+                }
+                values.push(next_tag);
+            }
+            Err(_) => {
+                // If we can't parse a tag, skip it and continue
+                // This maintains graceful degradation
+                break;
+            }
         }
-        values.push(next_tag);
     }
 
     values

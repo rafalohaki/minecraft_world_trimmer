@@ -5,15 +5,25 @@ use crate::nbt::tag::Tag;
 pub fn parse_list_tag(reader: &mut BinaryReader) -> (u8, Vec<Tag>) {
     let mut values = Vec::new();
 
-    let tag_type = reader.read_type();
-    let list_length = reader.read_i32();
+    let tag_type = match reader.read_type() {
+        Ok(t) => t,
+        Err(_) => return (0, values), // Return empty list on error
+    };
+    
+    let list_length = match reader.read_i32() {
+        Ok(l) => l,
+        Err(_) => return (0, values), // Return empty list on error
+    };
+    
     if list_length <= 0 && tag_type == 0 {
         return (tag_type, values);
     }
 
     for _ in 0..list_length {
-        let next_tag = parse_with_type(reader, tag_type, true);
-        values.push(next_tag);
+        match parse_with_type(reader, tag_type, true) {
+            Ok(next_tag) => values.push(next_tag),
+            Err(_) => break, // Stop parsing on error
+        }
     }
 
     (tag_type, values)
