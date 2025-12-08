@@ -51,7 +51,7 @@ pub fn parse_with_type(reader: &mut BinaryReader, tag_type: u8, skip_name: bool)
             Ok(Tag::ByteArray { name, value })
         }
         8 => {
-            let value = reader.read_string().unwrap_or_default();
+            let value = reader.read_string()?;
             Ok(Tag::String { name, value })
         }
         9 => {
