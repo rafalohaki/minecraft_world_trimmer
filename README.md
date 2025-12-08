@@ -66,20 +66,20 @@ The Minecraft World Trimmer as successfully been tested on the following worlds:
 
 ### Pre-Built Binaries
 
-Pre-built binaries are available in the [release tab](https://github.com/Quozul/minecraft_world_optimizer/releases) of
-the repository.
+Pre-built binaries (when available) are published in the
+[releases](https://github.com/rafalohaki/minecraft_world_trimmer/releases) of this repository.
 
 ### With Cargo
 
 ```shell
-cargo install --git https://github.com/Quozul/minecraft_world_trimmer.git
+cargo install --git https://github.com/rafalohaki/minecraft_world_trimmer.git
 ```
 
 ### From Source
 
 1. Clone the repository:
    ```shell
-   git clone https://github.com/Quozul/minecraft_world_trimmer.git
+   git clone https://github.com/rafalohaki/minecraft_world_trimmer.git
    cd minecraft_world_trimmer
    ```
 2. Install the trimmer globally:
