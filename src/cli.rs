@@ -1,5 +1,4 @@
 use clap::{Parser, ValueEnum};
-use std::cmp::Ord;
 use std::path::PathBuf;
 
 #[derive(Parser)]

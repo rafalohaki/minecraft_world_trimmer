@@ -82,12 +82,11 @@ impl Tag {
         }
     }
 
-    pub fn find_tag(&self, name: impl ToString) -> Option<&Tag> {
-        let name = name.to_string();
+    pub fn find_tag(&self, name: &str) -> Option<&Tag> {
         match self {
             Self::Compound { value, .. } => value
                 .iter()
-                .find(|v| v.get_name().is_some_and(|v| v == name)),
+                .find(|v| v.get_name().as_deref() == Some(name)),
             _ => None,
         }
     }

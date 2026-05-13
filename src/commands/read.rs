@@ -5,7 +5,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use rayon::iter::ParallelIterator;
 use rayon::prelude::IntoParallelRefIterator;
 use std::error::Error;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub fn execute_read(world_paths: &[PathBuf]) -> Result<(), Box<dyn Error>> {
     let entries = get_region_files(world_paths)?;
@@ -31,7 +31,7 @@ pub fn execute_read(world_paths: &[PathBuf]) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn optimize_read(region_file_path: &PathBuf) -> std::io::Result<OptimizeResult> {
+fn optimize_read(region_file_path: &Path) -> std::io::Result<OptimizeResult> {
     let mut result = OptimizeResult::default();
 
     match Region::from_file_name(region_file_path) {

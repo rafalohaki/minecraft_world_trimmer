@@ -14,8 +14,9 @@ use rayon::ThreadPoolBuilder;
 fn main() {
     let cli = Cli::parse();
 
-    // Configure Rayon threads dynamically: CPU count minus 2, at least 1
-    let cpus = num_cpus::get();
+    let cpus = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
     let threads = cpus.saturating_sub(2).max(1);
     let _ = ThreadPoolBuilder::new().num_threads(threads).build_global();
 
