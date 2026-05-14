@@ -3,7 +3,7 @@ use crate::region_loader::get_u32::get_u32;
 use crate::region_loader::location::Location;
 use flate2::Compression;
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::Read;
 use std::path::Path;
 use thiserror::Error;
 
@@ -62,8 +62,8 @@ impl Region {
         })
     }
 
-    pub fn to_bytes(&self, compression: Compression) -> Result<ToBytesResult, &'static str> {
-        let mut data = Vec::new();
+    pub fn to_bytes(&self, compression: Compression) -> ToBytesResult {
+        let mut data: Vec<u8> = Vec::with_capacity(self.chunks.len() * 4096);
         let mut location_table = [0_u8; 4096];
         let mut timestamp_table = [0_u8; 4096];
         let mut compression_fallbacks = 0usize;
@@ -103,15 +103,15 @@ impl Region {
             }
         }
 
-        let mut bytes = Vec::new();
+        let mut bytes = Vec::with_capacity(8192 + data.len());
         bytes.extend_from_slice(&location_table);
         bytes.extend_from_slice(&timestamp_table);
         bytes.extend(data);
-        Ok(ToBytesResult {
+        ToBytesResult {
             bytes,
             compression_fallbacks,
             header_write_failures,
-        })
+        }
     }
 
     pub fn get_chunks(&self) -> &[Chunk] {
@@ -153,10 +153,9 @@ fn try_read_bytes(file_path: &Path) -> std::io::Result<Vec<u8>> {
         .unwrap_or(0)
         .min(1_000_000_000);
 
-    let file = File::open(file_path)?;
+    let mut file = File::open(file_path)?;
     let mut buf = Vec::with_capacity(estimated_len);
-    let mut reader = BufReader::with_capacity(8 * 1024 * 1024, file);
-    reader.read_to_end(&mut buf)?;
+    file.read_to_end(&mut buf)?;
     Ok(buf)
 }
 
@@ -185,9 +184,7 @@ mod tests {
 
         let original_parsed_region_file = Region::from_bytes(original_bytes)
             .expect("Failed to parse original region file");
-        let result = original_parsed_region_file
-            .to_bytes(Compression::fast())
-            .expect("Failed to serialize region file");
+        let result = original_parsed_region_file.to_bytes(Compression::fast());
 
         // We cannot validate the header as the compression and chunk order in the payload may differ
         // resulting in a modification of the offset bytes, so as long as the re-parsed region file is
@@ -234,9 +231,7 @@ mod tests {
             Compression::default(),
             Compression::best(),
         ] {
-            let result = original_region
-                .to_bytes(compression)
-                .expect("Failed to serialize region file");
+            let result = original_region.to_bytes(compression);
 
             assert_eq!(
                 result.compression_fallbacks, 0,

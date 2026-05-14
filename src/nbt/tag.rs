@@ -84,9 +84,9 @@ impl Tag {
 
     pub fn find_tag(&self, name: &str) -> Option<&Tag> {
         match self {
-            Self::Compound { value, .. } => value
-                .iter()
-                .find(|v| v.get_name().as_deref() == Some(name)),
+            Self::Compound { value, .. } => {
+                value.iter().find(|v| v.get_name() == Some(name))
+            }
             _ => None,
         }
     }
@@ -109,21 +109,21 @@ impl Tag {
         }
     }
 
-    fn get_name(&self) -> Option<String> {
+    fn get_name(&self) -> Option<&str> {
         match self {
             Tag::End => None,
-            Tag::Byte { name, .. } => name.clone(),
-            Tag::Short { name, .. } => name.clone(),
-            Tag::Int { name, .. } => name.clone(),
-            Tag::Long { name, .. } => name.clone(),
-            Tag::Float { name, .. } => name.clone(),
-            Tag::Double { name, .. } => name.clone(),
-            Tag::ByteArray { name, .. } => name.clone(),
-            Tag::String { name, .. } => name.clone(),
-            Tag::List { name, .. } => name.clone(),
-            Tag::Compound { name, .. } => name.clone(),
-            Tag::IntArray { name, .. } => name.clone(),
-            Tag::LongArray { name, .. } => name.clone(),
+            Tag::Byte { name, .. }
+            | Tag::Short { name, .. }
+            | Tag::Int { name, .. }
+            | Tag::Long { name, .. }
+            | Tag::Float { name, .. }
+            | Tag::Double { name, .. }
+            | Tag::ByteArray { name, .. }
+            | Tag::String { name, .. }
+            | Tag::List { name, .. }
+            | Tag::Compound { name, .. }
+            | Tag::IntArray { name, .. }
+            | Tag::LongArray { name, .. } => name.as_deref(),
         }
     }
 
@@ -170,7 +170,7 @@ impl Tag {
                 base.extend(write_array_i8(value));
             }
             Tag::String { value, .. } => {
-                base.extend(write_string(value.clone()));
+                base.extend(write_string(value));
             }
             Tag::List {
                 value, tag_type, ..

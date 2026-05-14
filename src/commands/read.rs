@@ -1,5 +1,5 @@
 use crate::commands::optimize_result::{reduce_optimize_results, OptimizeResult};
-use crate::region_loader::region::Region;
+use crate::region_loader::region::{ParseRegionError, Region};
 use crate::world::get_region_files::get_region_files;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::iter::ParallelIterator;
@@ -18,10 +18,10 @@ pub fn execute_read(world_paths: &[PathBuf]) -> Result<(), Box<dyn Error>> {
 
     let mut results = entries
         .par_iter()
-        .filter_map(|entry| {
+        .map(|entry| {
             let result = optimize_read(entry);
             pb.inc(1);
-            result.ok()
+            result
         })
         .collect::<Vec<OptimizeResult>>();
 
@@ -31,7 +31,7 @@ pub fn execute_read(world_paths: &[PathBuf]) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn optimize_read(region_file_path: &Path) -> std::io::Result<OptimizeResult> {
+fn optimize_read(region_file_path: &Path) -> OptimizeResult {
     let mut result = OptimizeResult::default();
 
     match Region::from_file_name(region_file_path) {
@@ -48,10 +48,15 @@ fn optimize_read(region_file_path: &Path) -> std::io::Result<OptimizeResult> {
                 result.deleted_regions += 1;
             }
         }
-        Err(_) => {
+        Err(ParseRegionError::HeaderError) => {
+            // Plik za mały / uszkodzony nagłówek — w trybie write zostanie skasowany.
             result.deleted_regions += 1;
+        }
+        Err(ParseRegionError::ReadError) => {
+            // Błąd I/O (np. brak uprawnień, zerwane łącze sieciowe) — nie do skasowania.
+            result.io_errors += 1;
         }
     }
 
-    Ok(result)
+    result
 }

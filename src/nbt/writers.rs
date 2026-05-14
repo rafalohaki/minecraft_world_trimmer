@@ -12,11 +12,11 @@ fn create_initial_buffer<T>(size: usize) -> Vec<u8> {
     buffer
 }
 
-pub fn write_string(input: String) -> Vec<u8> {
+pub fn write_string(input: &str) -> Vec<u8> {
     let input_bytes = input.as_bytes();
     let mut buffer = Vec::with_capacity(input_bytes.len() + 2);
-    buffer.extend_from_slice(&size_to_u16_bytes(input.len()));
-    buffer.extend(input_bytes);
+    buffer.extend_from_slice(&size_to_u16_bytes(input_bytes.len()));
+    buffer.extend_from_slice(input_bytes);
     buffer
 }
 
@@ -44,7 +44,7 @@ mod tests {
 
     #[test]
     fn test_read_write() {
-        let parsed = write_string("HELLO".to_string());
+        let parsed = write_string("HELLO");
 
         assert_eq!(parsed, &[0, 5, 72, 69, 76, 76, 79]);
     }

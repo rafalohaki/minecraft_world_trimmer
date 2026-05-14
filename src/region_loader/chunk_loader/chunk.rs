@@ -43,9 +43,15 @@ impl Chunk {
 
         // Dane chunka: payload ma długość (chunk_size - 1)
         let header_size = 5; // 4 bajty rozmiaru + 1 bajt schematu
-        let start = offset + header_size;
-        let end = start + chunk_size - 1; // end jest ekskluzywne w slicingu
-        if start > end || end > buf.len() {
+        let start = offset
+            .checked_add(header_size)
+            .ok_or("Chunk start offset overflow")?;
+        // payload_len = chunk_size - 1 (chunk_size > 0 already verified)
+        let payload_len = chunk_size - 1;
+        let end = start
+            .checked_add(payload_len)
+            .ok_or("Chunk end offset overflow")?;
+        if end > buf.len() {
             return Err("Chunk payload out of bounds");
         }
         let raw_first_chunk = &buf[start..end];

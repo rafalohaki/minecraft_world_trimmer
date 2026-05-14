@@ -61,7 +61,9 @@ The Minecraft World Trimmer as successfully been tested on the following worlds:
 
 ### Prerequisites
 
-- Rust toolchain (stable)
+- Rust toolchain (stable, minimum 1.85)
+- `cmake` (required by the `zlib-ng` backend of `flate2`; install with `brew install cmake` on
+  macOS, `apt install cmake` on Debian/Ubuntu, or your distribution's equivalent)
 - A backed-up Minecraft world
 
 ### Pre-Built Binaries
