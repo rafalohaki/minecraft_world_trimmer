@@ -4,8 +4,8 @@ use crate::nbt::tag::Tag;
 use crate::region_loader::chunk_loader::compression_scheme::CompressionScheme;
 use crate::region_loader::get_u32::get_u32;
 use crate::region_loader::location::Location;
-use flate2::read::{GzDecoder, GzEncoder, ZlibDecoder, ZlibEncoder};
 use flate2::Compression;
+use flate2::read::{GzDecoder, GzEncoder, ZlibDecoder, ZlibEncoder};
 use lz4_flex::frame::FrameDecoder;
 use std::io::Read;
 
@@ -102,8 +102,12 @@ impl Chunk {
                     Ok(_) => Ok(bytes),
                     Err(_) => {
                         // Fallback: spróbuj trybu "block" z rozmiarem poprzedzającym (size-prepended)
-                        lz4_flex::block::decompress_size_prepended(raw_first_chunk)
-                            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "LZ4 block decompress failed"))
+                        lz4_flex::block::decompress_size_prepended(raw_first_chunk).map_err(|_| {
+                            std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "LZ4 block decompress failed",
+                            )
+                        })
                     }
                 }
             }
@@ -113,11 +117,12 @@ impl Chunk {
         let nbt = decoded_bytes
             .and_then(|bytes| {
                 let mut binary_reader = BinaryReader::new(&bytes);
-                parse_tag(&mut binary_reader)
-                    .map_err(|e| std::io::Error::new(
+                parse_tag(&mut binary_reader).map_err(|e| {
+                    std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
-                        format!("NBT parse error: {}", e)
-                    ))
+                        format!("NBT parse error: {}", e),
+                    )
+                })
             })
             .map_err(|_| "Error while parsing NBT")?;
 
@@ -175,9 +180,7 @@ impl Chunk {
     /// Checks if a chunk is not fully generated and has never been inhabited.
     /// Opaque chunks (unknown compression scheme) are never deleted.
     pub fn should_delete(&self) -> bool {
-        self.nbt.is_some()
-            && !self.is_fully_generated()
-            && !self.has_been_inhabited()
+        self.nbt.is_some() && !self.is_fully_generated() && !self.has_been_inhabited()
     }
 
     fn is_fully_generated(&self) -> bool {
@@ -186,20 +189,26 @@ impl Chunk {
             .and_then(|nbt| nbt.find_tag("Status"))
             .and_then(|tag| tag.get_string())
             .map(|status| status == Chunk::STATUS_FULL)
-            .unwrap_or(false) // if the tag is not present, we can assume that the chunk is not fully generated
+            // A chunk whose Status cannot be read is treated as fully generated:
+            // every vanilla chunk carries this tag, so its absence means we do not
+            // understand the format — err on the side of keeping the chunk.
+            .unwrap_or(true)
     }
 
     fn has_been_inhabited(&self) -> bool {
         // The InhabitedTime value seems to be incremented for all 8 chunks around a player (including the one the player is standing in)
-        let inhabited_time = self
+        match self
             .nbt
             .as_ref()
             .and_then(|nbt| nbt.find_tag("InhabitedTime"))
             .and_then(|tag| tag.get_long())
             .copied()
-            .unwrap_or(0); // If the tag is not present, we can assume that the chunk has never been inhabited
-
-        inhabited_time > 0
+        {
+            Some(inhabited_time) => inhabited_time > 0,
+            // Every vanilla chunk carries this tag; its absence means we do not
+            // understand the format — err on the side of keeping the chunk.
+            None => true,
+        }
     }
 
     pub fn to_original_bytes(&self) -> Vec<u8> {

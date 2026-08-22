@@ -9,12 +9,12 @@ pub fn parse_list_tag(reader: &mut BinaryReader) -> (u8, Vec<Tag>) {
         Ok(t) => t,
         Err(_) => return (0, values), // Return empty list on error
     };
-    
+
     let list_length = match reader.read_i32() {
         Ok(l) => l,
         Err(_) => return (0, values), // Return empty list on error
     };
-    
+
     if list_length <= 0 && tag_type == 0 {
         return (tag_type, values);
     }

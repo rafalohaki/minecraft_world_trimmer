@@ -14,16 +14,14 @@ macro_rules! impl_read_number {
         pub fn $fn_name(&mut self) -> Result<$type, ReaderError> {
             let size = std::mem::size_of::<$type>();
             let end = self.index + size;
-            
+
             if end > self.raw.len() {
                 return Err(ReaderError::UnexpectedEof);
             }
-            
+
             let bytes = &self.raw[self.index..end];
-            let integer = <$type>::from_be_bytes(
-                bytes.try_into()
-                    .map_err(|_| ReaderError::UnexpectedEof)?
-            );
+            let integer =
+                <$type>::from_be_bytes(bytes.try_into().map_err(|_| ReaderError::UnexpectedEof)?);
             self.index = end;
             Ok(integer)
         }
@@ -33,11 +31,17 @@ macro_rules! impl_read_number {
 macro_rules! impl_read_array {
     ($fn_name:ident, $type:ty, $reader:ident) => {
         pub fn $fn_name(&mut self) -> Vec<$type> {
+            let elem_size = std::mem::size_of::<$type>();
+            // A negative length means corrupted data; treat it as an empty array
+            // instead of wrapping into an enormous allocation that would abort.
             let size = match self.read_i32() {
-                Ok(s) => s as usize,
-                Err(_) => return Vec::new(), // Return empty array on error
+                Ok(s) if s >= 0 => s as usize,
+                _ => return Vec::new(),
             };
-            let mut values = Vec::with_capacity(size);
+            // Never preallocate more than the remaining input could contain;
+            // the loop below stops at EOF anyway.
+            let max_possible = (self.raw.len().saturating_sub(self.index)) / elem_size;
+            let mut values = Vec::with_capacity(size.min(max_possible));
 
             for _ in 0..size {
                 match self.$reader() {
@@ -64,15 +68,14 @@ impl<'a> BinaryReader<'a> {
     pub fn read_string(&mut self) -> Result<String, ReaderError> {
         let size = self.read_u16()? as usize;
         let end = self.index + size;
-        
+
         if end > self.raw.len() {
             return Err(ReaderError::UnexpectedEof);
         }
-        
+
         let bytes = &self.raw[self.index..end];
         self.index = end;
-        String::from_utf8(bytes.to_vec())
-            .map_err(ReaderError::InvalidUtf8)
+        String::from_utf8(bytes.to_vec()).map_err(ReaderError::InvalidUtf8)
     }
 
     pub fn read_name(&mut self) -> Option<String> {
@@ -164,9 +167,32 @@ mod tests {
     fn test_bounds_checking() {
         let data = [0x7F]; // Only 1 byte
         let mut reader = BinaryReader::new(&data);
-        
+
         // This should fail due to bounds checking
         let result = reader.read_i16();
         assert!(result.is_err());
+    }
+
+    /// Corrupted data claiming a negative array length must yield an empty
+    /// array, not wrap into an enormous allocation that aborts the process.
+    #[test]
+    fn test_negative_array_length_returns_empty() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&(-1_i32).to_be_bytes());
+        let mut reader = BinaryReader::new(&data);
+        assert!(reader.read_int_array().is_empty());
+        assert!(reader.read_byte_array().is_empty());
+        assert!(reader.read_long_array().is_empty());
+    }
+
+    /// An honest-but-huge length must not preallocate more than the remaining
+    /// input could contain; the returned array is truncated at EOF.
+    #[test]
+    fn test_oversized_array_length_does_not_oom() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&i32::MAX.to_be_bytes());
+        data.extend_from_slice(&1_i32.to_be_bytes()); // one real element
+        let mut reader = BinaryReader::new(&data);
+        assert_eq!(reader.read_int_array(), vec![1]);
     }
 }

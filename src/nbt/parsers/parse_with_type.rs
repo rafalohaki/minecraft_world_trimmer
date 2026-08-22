@@ -13,7 +13,11 @@ pub enum NbtError {
     ReaderError(#[from] ReaderError),
 }
 
-pub fn parse_with_type(reader: &mut BinaryReader, tag_type: u8, skip_name: bool) -> Result<Tag, NbtError> {
+pub fn parse_with_type(
+    reader: &mut BinaryReader,
+    tag_type: u8,
+    skip_name: bool,
+) -> Result<Tag, NbtError> {
     let name = if skip_name || tag_type == 0 {
         None
     } else {

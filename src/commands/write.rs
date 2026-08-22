@@ -1,4 +1,4 @@
-use crate::commands::optimize_result::{reduce_optimize_results, OptimizeResult};
+use crate::commands::optimize_result::{OptimizeResult, reduce_optimize_results};
 use crate::region_loader::region::{ParseRegionError, Region};
 use crate::world::get_region_files::get_region_files;
 use flate2::Compression;
@@ -48,6 +48,11 @@ fn optimize_write(region_file_path: &Path, compression: Compression) -> Optimize
     match Region::from_file_name(region_file_path) {
         Ok(mut region) => {
             result.total_chunks += region.get_chunk_count();
+            result.preserved_opaque_chunks += region
+                .get_chunks()
+                .iter()
+                .filter(|chunk| chunk.nbt.is_none())
+                .count();
 
             let chunks_to_delete_indices: Vec<_> = region
                 .get_chunks()
@@ -154,10 +159,10 @@ fn atomic_write_region(region_file_path: &Path, payload: &[u8]) -> std::io::Resu
     // opening a directory or fsyncing it may not be supported — we treat any
     // failure as non-fatal because journaled filesystems already enforce the
     // necessary ordering.
-    if let Some(dir) = region_file_path.parent() {
-        if let Ok(dir_handle) = File::open(dir) {
-            let _ = dir_handle.sync_all();
-        }
+    if let Some(dir) = region_file_path.parent()
+        && let Ok(dir_handle) = File::open(dir)
+    {
+        let _ = dir_handle.sync_all();
     }
 
     Ok(())
@@ -184,11 +189,12 @@ mod tests {
         let tmp = tempfile_path_for(target);
         assert_eq!(tmp.parent(), target.parent(), "tempfile must be a sibling");
         assert!(tmp.file_name().unwrap().to_string_lossy().contains(".tmp."));
-        assert!(tmp
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .starts_with("r.0.0.mca"));
+        assert!(
+            tmp.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("r.0.0.mca")
+        );
     }
 
     #[test]
@@ -222,7 +228,10 @@ mod tests {
 
         let result = optimize_write(&target, Compression::fast());
         assert!(result.total_chunks > 0);
-        assert_eq!(result.io_errors, 0, "no I/O errors expected on healthy sample");
+        assert_eq!(
+            result.io_errors, 0,
+            "no I/O errors expected on healthy sample"
+        );
 
         // The file still exists (was not removed) and re-parses cleanly.
         let reparsed = Region::from_file_name(&target).expect("written file must re-parse");

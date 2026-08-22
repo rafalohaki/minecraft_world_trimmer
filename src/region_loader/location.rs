@@ -9,7 +9,7 @@ impl Location {
     /// Creates a new location, takes the real offset and size as input
     /// Meaning the offset and sizes must be a multiple of 4096
     pub fn new(offset: u32, size: u32, timestamp: u32) -> Result<Self, &'static str> {
-        if offset % 4096 != 0 || size % 4096 != 0 {
+        if !offset.is_multiple_of(4096) || !size.is_multiple_of(4096) {
             return Err("Offset and Size must be a multiple of 4096");
         }
         let size_div = size / 4096;

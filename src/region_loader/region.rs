@@ -47,14 +47,14 @@ impl Region {
             let timestamp = get_u32(timestamp_table, i);
             let location = Location::from_bytes(l, timestamp);
 
-            if location.is_valid() {
-                if let Ok(chunk) = Chunk::from_location(bytes, location, i) {
-                    chunks.push(chunk);
-                }
-                // Chunks with an unknown compression scheme (e.g. 127, a server-specific
-                // custom algorithm) are loaded as opaque chunks and preserved verbatim;
-                // only truly corrupt chunks are dropped here.
+            if location.is_valid()
+                && let Ok(chunk) = Chunk::from_location(bytes, location, i)
+            {
+                chunks.push(chunk);
             }
+            // Chunks with an unknown compression scheme (e.g. 127, a server-specific
+            // custom algorithm) are loaded as opaque chunks and preserved verbatim;
+            // only truly corrupt chunks are dropped here.
         }
 
         Ok(Self {
@@ -185,16 +185,16 @@ mod tests {
     fn test_small_region() {
         let original_bytes = include_bytes!("../../test_files/r.-1.-1.mca");
 
-        let original_parsed_region_file = Region::from_bytes(original_bytes)
-            .expect("Failed to parse original region file");
+        let original_parsed_region_file =
+            Region::from_bytes(original_bytes).expect("Failed to parse original region file");
         let result = original_parsed_region_file.to_bytes(Compression::fast());
 
         // We cannot validate the header as the compression and chunk order in the payload may differ
         // resulting in a modification of the offset bytes, so as long as the re-parsed region file is
         // the same as the parsed original, we should be fine
 
-        let parsed_again = Region::from_bytes(&result.bytes)
-            .expect("Failed to parse serialized region file");
+        let parsed_again =
+            Region::from_bytes(&result.bytes).expect("Failed to parse serialized region file");
 
         let original_chunks = original_parsed_region_file.get_chunks();
         let parsed_chunks = parsed_again.get_chunks();
@@ -222,8 +222,8 @@ mod tests {
     fn test_roundtrip_decompressed_nbt_byte_for_byte() {
         let original_bytes = include_bytes!("../../test_files/r.-1.-1.mca");
 
-        let original_region = Region::from_bytes(original_bytes)
-            .expect("Failed to parse original region file");
+        let original_region =
+            Region::from_bytes(original_bytes).expect("Failed to parse original region file");
         assert!(
             !original_region.get_chunks().is_empty(),
             "sample region file must contain at least one chunk"
@@ -245,8 +245,8 @@ mod tests {
                 "every chunk should produce a valid header entry"
             );
 
-            let parsed_again = Region::from_bytes(&result.bytes)
-                .expect("Failed to parse serialized region file");
+            let parsed_again =
+                Region::from_bytes(&result.bytes).expect("Failed to parse serialized region file");
 
             let original_chunks = original_region.get_chunks();
             let parsed_chunks = parsed_again.get_chunks();
@@ -260,8 +260,16 @@ mod tests {
             for (i, (original, parsed)) in
                 original_chunks.iter().zip(parsed_chunks.iter()).enumerate()
             {
-                let original_nbt_bytes = original.nbt.as_ref().expect("sample chunks must parse").to_bytes();
-                let parsed_nbt_bytes = parsed.nbt.as_ref().expect("sample chunks must parse").to_bytes();
+                let original_nbt_bytes = original
+                    .nbt
+                    .as_ref()
+                    .expect("sample chunks must parse")
+                    .to_bytes();
+                let parsed_nbt_bytes = parsed
+                    .nbt
+                    .as_ref()
+                    .expect("sample chunks must parse")
+                    .to_bytes();
                 assert_eq!(
                     original_nbt_bytes, parsed_nbt_bytes,
                     "chunk #{i} decompressed NBT differs after round-trip (compression {:?})",
@@ -296,23 +304,18 @@ mod tests {
         bytes[0..4].copy_from_slice(&[0, 0, 2, 1]);
         bytes.extend_from_slice(&chunk_bytes);
 
-        let region =
-            Region::from_bytes(&bytes).expect("region with opaque chunk must parse");
+        let region = Region::from_bytes(&bytes).expect("region with opaque chunk must parse");
         assert_eq!(region.get_chunk_count(), 1);
         let chunk = &region.get_chunks()[0];
         assert!(chunk.nbt.is_none(), "opaque chunk must have no parsed NBT");
-        assert!(
-            !chunk.should_delete(),
-            "opaque chunk must never be deleted"
-        );
+        assert!(!chunk.should_delete(), "opaque chunk must never be deleted");
 
         // Round-trip: rewritten region keeps the chunk verbatim at a valid slot
         let result = region.to_bytes(Compression::fast());
         assert_eq!(result.compression_fallbacks, 0);
         assert_eq!(result.header_write_failures, 0);
 
-        let reparsed =
-            Region::from_bytes(&result.bytes).expect("rewritten region must re-parse");
+        let reparsed = Region::from_bytes(&result.bytes).expect("rewritten region must re-parse");
         assert_eq!(reparsed.get_chunk_count(), 1);
         let reparsed_chunk = &reparsed.get_chunks()[0];
         assert!(reparsed_chunk.nbt.is_none());

@@ -1,5 +1,5 @@
 use crate::nbt::writers::{
-    size_to_i32_bytes, write_array_i32, write_array_i64, write_array_i8, write_string,
+    size_to_i32_bytes, write_array_i8, write_array_i32, write_array_i64, write_string,
 };
 
 #[derive(PartialEq, Debug, Clone)]
@@ -85,9 +85,7 @@ impl Tag {
 
     pub fn find_tag(&self, name: &str) -> Option<&Tag> {
         match self {
-            Self::Compound { value, .. } => {
-                value.iter().find(|v| v.get_name() == Some(name))
-            }
+            Self::Compound { value, .. } => value.iter().find(|v| v.get_name() == Some(name)),
             _ => None,
         }
     }

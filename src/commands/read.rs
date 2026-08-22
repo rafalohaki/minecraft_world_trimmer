@@ -1,4 +1,4 @@
-use crate::commands::optimize_result::{reduce_optimize_results, OptimizeResult};
+use crate::commands::optimize_result::{OptimizeResult, reduce_optimize_results};
 use crate::region_loader::region::{ParseRegionError, Region};
 use crate::world::get_region_files::get_region_files;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -42,6 +42,9 @@ fn optimize_read(region_file_path: &Path) -> OptimizeResult {
             for chunk in chunks {
                 if chunk.should_delete() {
                     result.deleted_chunks += 1;
+                }
+                if chunk.nbt.is_none() {
+                    result.preserved_opaque_chunks += 1;
                 }
             }
             if result.deleted_chunks >= result.total_chunks {

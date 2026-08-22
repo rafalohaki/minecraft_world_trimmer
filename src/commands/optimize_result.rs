@@ -10,6 +10,9 @@ pub struct OptimizeResult {
     pub regions_with_compression_issues: usize,
     pub header_write_failures: usize,
     pub regions_with_header_issues: usize,
+    /// Chunks kept verbatim because their compression scheme is unknown
+    /// (e.g. 127 = custom server algorithm). They are never deleted or recompressed.
+    pub preserved_opaque_chunks: usize,
 }
 
 impl Display for OptimizeResult {
@@ -24,7 +27,8 @@ impl Display for OptimizeResult {
                    Compression Fallbacks: {}\n\
                    Regions With Compression Issues: {}\n\
                    Header Write Failures: {}\n\
-                   Regions With Header Issues: {}",
+                   Regions With Header Issues: {}\n\
+                   Preserved Opaque Chunks (unknown compression): {}",
             self.total_chunks,
             self.deleted_chunks,
             self.deleted_regions,
@@ -32,7 +36,8 @@ impl Display for OptimizeResult {
             self.compression_failures,
             self.regions_with_compression_issues,
             self.header_write_failures,
-            self.regions_with_header_issues
+            self.regions_with_header_issues,
+            self.preserved_opaque_chunks
         )
     }
 }
@@ -49,6 +54,7 @@ pub fn reduce_optimize_results(results: &mut [OptimizeResult]) -> OptimizeResult
             acc.regions_with_compression_issues += cur.regions_with_compression_issues;
             acc.header_write_failures += cur.header_write_failures;
             acc.regions_with_header_issues += cur.regions_with_header_issues;
+            acc.preserved_opaque_chunks += cur.preserved_opaque_chunks;
             acc
         })
         .cloned()
