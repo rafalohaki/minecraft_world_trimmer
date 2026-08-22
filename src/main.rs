@@ -21,7 +21,11 @@ fn main() {
     let _ = ThreadPoolBuilder::new().num_threads(threads).build_global();
 
     let result = match cli.mode {
-        Mode::Write => execute_write(&cli.world_paths, Compression::new(cli.compression_level)),
+        Mode::Write => execute_write(
+            &cli.world_paths,
+            Compression::new(cli.compression_level),
+            cli.backup_dir.as_deref(),
+        ),
         Mode::Check => execute_read(&cli.world_paths),
     };
 

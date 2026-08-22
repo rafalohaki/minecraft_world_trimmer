@@ -20,6 +20,13 @@ pub struct Cli {
     /// Compression level when writing region files
     #[arg(short, long, default_value = "6", value_parser = validate_compression_level)]
     pub compression_level: u32,
+
+    /// Quarantine directory for original region files. When set, every region file
+    /// that would be overwritten or deleted is MOVED there first (same-volume rename:
+    /// instant and free). The world can be fully restored from this directory until
+    /// you delete it. Recommended path: outside the world folder, on the same volume.
+    #[arg(long, value_name = "DIR")]
+    pub backup_dir: Option<PathBuf>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]

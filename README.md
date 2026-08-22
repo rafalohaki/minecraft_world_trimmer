@@ -109,8 +109,10 @@ Replace `<MODE>` with one of the following:
 - `write`: the program will delete unused chunks and region files.
 
 Replace `<WORLD_PATHS>` with the path to your Minecraft world folders containing region files.
-It will detect the 3 vanilla dimensions and trim them. Note that this has not been tested on modded worlds with
-multiple dimensions.
+It will detect the 3 vanilla dimensions and trim them. Both the classic layout (`region/`, `DIM-1/`,
+`DIM1/`) and the layout introduced in 26.1 (`dimensions/<namespace>/<dimension>/region`) are supported,
+including custom/modded dimensions. Note that this has not been tested on modded worlds beyond dimension
+folder detection.
 
 Example:
 
@@ -125,6 +127,20 @@ It can also be used to trim server worlds as dimensions are split in multiple wo
 # Or if your shell does not support wildcard:
 ❯ minecraft_world_trimmer check /path/to/server/world /path/to/server/world_nether /path/to/server/world_the_end
 ```
+
+### Trimming without a full backup (quarantine mode)
+
+If the world is too large to copy, run `write` with `--backup-dir`. Every region file that would be
+overwritten or deleted is **moved** to that directory first — a rename on the same volume is instant
+and free, so you only need enough free space for the trimmed output (typically 20–30% of the world),
+not a second copy of the whole world:
+
+```shell
+❯ minecraft_world_trimmer write ~/.minecraft/saves/MyWorld --backup-dir /path/on/same/disk/trim_backup
+```
+
+Restore the world at any time by moving files from the backup directory back to their original
+locations. Delete the backup directory only after the trimmed world loads and plays correctly in game.
 
 ## Similar Tools
 

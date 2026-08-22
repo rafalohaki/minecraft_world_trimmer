@@ -18,7 +18,13 @@ static TEMPFILE_SEQ: AtomicU64 = AtomicU64::new(0);
 pub fn execute_write(
     world_paths: &[PathBuf],
     compression: Compression,
+    backup_dir: Option<&Path>,
 ) -> Result<(), Box<dyn Error>> {
+    // Surface an invalid backup location before touching any world file.
+    if let Some(backup_root) = backup_dir {
+        std::fs::create_dir_all(backup_root)?;
+    }
+
     let entries = get_region_files(world_paths)?;
     let pb = ProgressBar::new(entries.len() as u64);
     let style = ProgressStyle::with_template(
@@ -30,7 +36,7 @@ pub fn execute_write(
     let mut results = entries
         .par_iter()
         .map(|entry| {
-            let result = optimize_write(entry, compression);
+            let result = optimize_write(entry, compression, backup_dir, world_paths);
             pb.inc(1);
             result
         })
@@ -38,11 +44,57 @@ pub fn execute_write(
 
     let result = reduce_optimize_results(&mut results);
     println!("{result}");
+    if let Some(backup_root) = backup_dir {
+        println!(
+            "Originals preserved in {backup_root:?} — delete this directory only after verifying the world loads correctly."
+        );
+    }
 
     Ok(())
 }
 
-fn optimize_write(region_file_path: &Path, compression: Compression) -> OptimizeResult {
+/// Path of `region_file` mirrored under the backup root. The longest matching
+/// world root is stripped so files from different dimensions/worlds keep their
+/// relative structure (`world/region/r.0.0.mca`, `world/DIM-1/region/...`).
+fn backup_path_for(region_file: &Path, backup_root: &Path, world_paths: &[PathBuf]) -> PathBuf {
+    let relative = world_paths
+        .iter()
+        .filter(|root| region_file.starts_with(root))
+        .filter_map(|root| region_file.strip_prefix(root).ok())
+        .max_by_key(|rel| rel.as_os_str().len())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| {
+            // Not under any known world root (should not happen); fall back
+            // to the bare file name so nothing is lost.
+            region_file
+                .file_name()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("unknown.mca"))
+        });
+    backup_root.join(relative)
+}
+
+/// Move the original region file into the backup directory (same-volume rename:
+/// O(1), no extra disk space beyond what the trimmed replacement will use).
+fn quarantine_original(
+    region_file: &Path,
+    backup_root: &Path,
+    world_paths: &[PathBuf],
+) -> std::io::Result<PathBuf> {
+    let destination = backup_path_for(region_file, backup_root, world_paths);
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::rename(region_file, &destination)?;
+    Ok(destination)
+}
+
+fn optimize_write(
+    region_file_path: &Path,
+    compression: Compression,
+    backup_dir: Option<&Path>,
+    world_paths: &[PathBuf],
+) -> OptimizeResult {
     let mut result = OptimizeResult::default();
 
     match Region::from_file_name(region_file_path) {
@@ -67,11 +119,29 @@ fn optimize_write(region_file_path: &Path, compression: Compression) -> Optimize
             }
 
             if region.is_empty() {
-                match std::fs::remove_file(region_file_path) {
+                let removal = match backup_dir {
+                    Some(backup_root) => {
+                        quarantine_original(region_file_path, backup_root, world_paths).map(|_| ())
+                    }
+                    None => std::fs::remove_file(region_file_path),
+                };
+                match removal {
                     Ok(()) => result.deleted_regions += 1,
                     Err(_) => result.io_errors += 1,
                 }
             } else if region.is_modified() {
+                // With a backup dir configured, never destroy the original without
+                // having moved it aside first.
+                if let Some(backup_root) = backup_dir
+                    && quarantine_original(region_file_path, backup_root, world_paths).is_err()
+                {
+                    result.io_errors += 1;
+                    eprintln!(
+                        "Failed to quarantine original before rewrite: {:?}",
+                        region_file_path
+                    );
+                    return result;
+                }
                 let to_bytes = region.to_bytes(compression);
                 if to_bytes.compression_fallbacks > 0 {
                     result.compression_failures += to_bytes.compression_fallbacks;
@@ -94,10 +164,18 @@ fn optimize_write(region_file_path: &Path, compression: Compression) -> Optimize
                 }
             }
         }
-        Err(ParseRegionError::HeaderError) => match std::fs::remove_file(region_file_path) {
-            Ok(()) => result.deleted_regions += 1,
-            Err(_) => result.io_errors += 1,
-        },
+        Err(ParseRegionError::HeaderError) => {
+            let removal = match backup_dir {
+                Some(backup_root) => {
+                    quarantine_original(region_file_path, backup_root, world_paths).map(|_| ())
+                }
+                None => std::fs::remove_file(region_file_path),
+            };
+            match removal {
+                Ok(()) => result.deleted_regions += 1,
+                Err(_) => result.io_errors += 1,
+            }
+        }
         Err(ParseRegionError::ReadError) => {
             result.io_errors += 1;
         }
@@ -226,7 +304,7 @@ mod tests {
         let original_bytes = include_bytes!("../../test_files/r.-1.-1.mca");
         std::fs::write(&target, original_bytes).unwrap();
 
-        let result = optimize_write(&target, Compression::fast());
+        let result = optimize_write(&target, Compression::fast(), None, &[]);
         assert!(result.total_chunks > 0);
         assert_eq!(
             result.io_errors, 0,
@@ -249,6 +327,104 @@ mod tests {
             "atomic write must clean up tempfiles, found: {:?}",
             leftovers.iter().map(|e| e.path()).collect::<Vec<_>>()
         );
+
+        std::fs::remove_dir_all(&tmp_dir).ok();
+    }
+
+    /// With `--backup-dir`, an original region file that would be deleted (all
+    /// chunks removed) must be MOVED into the backup directory instead, so the
+    /// world can be restored without a full pre-copy of the world.
+    #[test]
+    fn test_backup_dir_quarantines_deleted_region() {
+        use crate::nbt::tag::Tag;
+        use flate2::read::ZlibEncoder;
+        use std::io::Read;
+
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "mwt_quarantine_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let world = tmp_dir.join("world");
+        let region_dir = world.join("region");
+        std::fs::create_dir_all(&region_dir).unwrap();
+        let target = region_dir.join("r.0.0.mca");
+        let backup_root = tmp_dir.join("backup");
+
+        // Minimal region with a single deletable chunk (Status != full, InhabitedTime == 0)
+        let nbt = Tag::Compound {
+            name: Some(String::new()),
+            value: vec![
+                Tag::Int {
+                    name: Some(String::from("xPos")),
+                    value: 0,
+                },
+                Tag::Int {
+                    name: Some(String::from("zPos")),
+                    value: 0,
+                },
+                Tag::String {
+                    name: Some(String::from("Status")),
+                    value: String::from("minecraft:empty"),
+                },
+                Tag::Long {
+                    name: Some(String::from("InhabitedTime")),
+                    value: 0,
+                },
+            ],
+        };
+        let mut compressed = Vec::new();
+        ZlibEncoder::new(nbt.to_bytes().as_slice(), Compression::fast())
+            .read_to_end(&mut compressed)
+            .unwrap();
+        let mut chunk_frame = ((compressed.len() + 1) as u32).to_be_bytes().to_vec();
+        chunk_frame.push(2_u8); // zlib
+        chunk_frame.extend_from_slice(&compressed);
+        let aligned_len = chunk_frame.len().div_ceil(4096) * 4096;
+
+        let mut region_bytes = vec![0_u8; 8192];
+        region_bytes[0..4].copy_from_slice(&[0, 0, 2, (aligned_len / 4096) as u8]);
+        region_bytes.extend_from_slice(&chunk_frame);
+        region_bytes.resize(8192 + aligned_len, 0);
+        std::fs::write(&target, &region_bytes).unwrap();
+
+        let world_paths = vec![world.clone()];
+        let result = optimize_write(
+            &target,
+            Compression::fast(),
+            Some(&backup_root),
+            &world_paths,
+        );
+        assert_eq!(result.deleted_chunks, 1);
+        assert_eq!(result.deleted_regions, 1);
+        assert_eq!(result.io_errors, 0);
+
+        // The region file is gone from the world…
+        assert!(
+            !target.exists(),
+            "region file must be removed from the world"
+        );
+        // …and the byte-identical original must sit in the backup directory,
+        // mirroring the world-relative path.
+        let backup_file = backup_root.join("region/r.0.0.mca");
+        assert!(
+            backup_file.is_file(),
+            "original must be quarantined at {:?}",
+            backup_file
+        );
+        assert_eq!(
+            std::fs::read(&backup_file).unwrap(),
+            region_bytes,
+            "quarantined original must be byte-identical"
+        );
+
+        // Rollback works by renaming the backup file back.
+        std::fs::rename(&backup_file, &target).unwrap();
+        let restored = Region::from_file_name(&target);
+        assert!(restored.is_ok(), "restored file must re-parse");
 
         std::fs::remove_dir_all(&tmp_dir).ok();
     }
