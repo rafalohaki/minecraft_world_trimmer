@@ -51,6 +51,7 @@ pub struct Chunk {
 }
 
 impl Chunk {
+    #[allow(dead_code)]
     const STATUS_FULL: &'static str = "minecraft:full";
 
     pub fn from_location(
@@ -265,12 +266,14 @@ impl Chunk {
         self.table_position
     }
 
-    /// Checks if a chunk is not fully generated and has never been inhabited.
-    /// Opaque chunks (unknown compression scheme) are never deleted.
+    /// Chunks never visited by any player (`InhabitedTime == 0`) are safe to
+    /// delete — even if `Status == full` (pregenerated terrain). Opaque chunks
+    /// (unknown compression) are never deleted.
     pub fn should_delete(&self) -> bool {
-        self.nbt.is_some() && !self.is_fully_generated() && !self.has_been_inhabited()
+        self.nbt.is_some() && !self.has_been_inhabited()
     }
 
+    #[allow(dead_code)]
     fn is_fully_generated(&self) -> bool {
         self.nbt
             .as_ref()
@@ -284,11 +287,8 @@ impl Chunk {
     }
 
     fn has_been_inhabited(&self) -> bool {
-        // InhabitedTime is in ticks (20/s). Previous `> 0` kept even a 0.05s fly-over.
-        // 30s (600 ticks) = przelot elytrą; 60s (1200) = krótki postój. Poniżej progu
-        // chunk z `Status != full` jest nadal pusty i bezpieczny do skasowania
-        // (postawienie bloku i tak ustawia `Status == full` i chroni).
-        const INHABITED_THRESHOLD_TICKS: i64 = 600; // 30s
+        // `InhabitedTime == 0` = nigdy nie ładowany przy graczu. Nawet 1 tick
+        // (0,05s) oznacza że ktoś zahaczył renderem — chronimy.
         match self
             .nbt
             .as_ref()
@@ -296,7 +296,7 @@ impl Chunk {
             .and_then(|tag| tag.get_long())
             .copied()
         {
-            Some(inhabited_time) => inhabited_time > INHABITED_THRESHOLD_TICKS,
+            Some(inhabited_time) => inhabited_time > 0,
             // Every vanilla chunk carries this tag; its absence means we do not
             // understand the format — err on the side of keeping the chunk.
             None => true,
