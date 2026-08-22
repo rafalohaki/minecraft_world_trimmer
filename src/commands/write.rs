@@ -97,12 +97,68 @@ fn optimize_write(
 ) -> OptimizeResult {
     let mut result = OptimizeResult::default();
 
-    // Streaming trim: the whole region's parsed NBT is never held in memory —
-    // each chunk is decoded, evaluated and serialized one at a time.
-    let outcome = match read_region_file(region_file_path)
-        .and_then(|bytes| rewrite_region_bytes(&bytes, compression))
-    {
-        Ok(outcome) => outcome,
+    // Fast path: most regions in a snapshot world have 0 deletable chunks.
+    // `rewrite_region_bytes` decompresses + re-serializes every kept chunk, so
+    // calling it for every file wastes ~50% of CPU (the 59/s → 120/s gap the
+    // user observed on world.SNAPSHOT with 70k regions). Do a cheap
+    // decompress+parse-only scan first; only pay the recompression cost when
+    // something actually needs deleting.
+    let bytes = match read_region_file(region_file_path) {
+        Ok(b) => b,
+        Err(ParseRegionError::HeaderError) => {
+            let removal = match backup_dir {
+                Some(backup_root) => {
+                    quarantine_original(region_file_path, backup_root, world_paths).map(|_| ())
+                }
+                None => std::fs::remove_file(region_file_path),
+            };
+            match removal {
+                Ok(()) => result.deleted_regions += 1,
+                Err(_) => result.io_errors += 1,
+            }
+            return result;
+        }
+        Err(ParseRegionError::ReadError) => {
+            result.io_errors += 1;
+            return result;
+        }
+    };
+
+    // Cheap scan: no recompression, just decide if we need to rewrite at all.
+    let stats = match crate::region_loader::region::analyze_region_bytes(&bytes) {
+        Ok(s) => s,
+        Err(ParseRegionError::HeaderError) => {
+            let removal = match backup_dir {
+                Some(backup_root) => {
+                    quarantine_original(region_file_path, backup_root, world_paths).map(|_| ())
+                }
+                None => std::fs::remove_file(region_file_path),
+            };
+            match removal {
+                Ok(()) => result.deleted_regions += 1,
+                Err(_) => result.io_errors += 1,
+            }
+            return result;
+        }
+        Err(ParseRegionError::ReadError) => {
+            result.io_errors += 1;
+            return result;
+        }
+    };
+
+    if stats.deletable_chunks == 0 {
+        // Nothing to delete and (by construction `analyze` already proved the
+        // file is header-valid) — skip the expensive recompression entirely.
+        // Corrupt chunks that `rewrite` would drop are left for a future
+        // `--deep-clean` pass; they are rare and not worth doubling CPU for.
+        result.total_chunks += stats.total_chunks;
+        result.preserved_opaque_chunks += stats.opaque_chunks;
+        return result;
+    }
+
+    // At this point we know at least one chunk is deletable, so pay the cost.
+    let outcome = match rewrite_region_bytes(&bytes, compression) {
+        Ok(o) => o,
         Err(ParseRegionError::HeaderError) => {
             let removal = match backup_dir {
                 Some(backup_root) => {

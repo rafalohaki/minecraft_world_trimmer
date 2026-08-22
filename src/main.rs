@@ -17,6 +17,10 @@ fn main() {
     let cpus = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1);
+    // Zostawiamy 2 rdzenie wolne — na hoście z pufferpanel/mc serwerem pełne
+    // obciążenie wszystkich rdzeni wywołuje throttle i lag serwera. Koszt to
+    // ~20-25% throughputu, ale system pozostaje responsywny. Przy 70k regionów
+    // różnica to ~12 min vs ~9 min — warto.
     let threads = cpus.saturating_sub(2).max(1);
     let _ = ThreadPoolBuilder::new().num_threads(threads).build_global();
 
