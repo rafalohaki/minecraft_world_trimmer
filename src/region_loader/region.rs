@@ -7,12 +7,17 @@ use std::io::Read;
 use std::path::Path;
 use thiserror::Error;
 
+/// Legacy in-memory region model. The production path is the streaming
+/// `analyze_region_bytes` / `rewrite_region_bytes` below; this struct is kept
+/// only for byte-for-byte round-trip regression tests.
+#[cfg(test)]
 #[derive(PartialEq, Debug)]
 pub struct Region {
     chunks: Vec<Chunk>,
     is_modified: bool,
 }
 
+#[cfg(test)]
 pub struct ToBytesResult {
     pub bytes: Vec<u8>,
     pub compression_fallbacks: usize,
@@ -27,6 +32,163 @@ pub enum ParseRegionError {
     HeaderError,
 }
 
+/// Counts produced by a streaming pass over a region file (`analyze_region_bytes`).
+#[derive(Default, Debug)]
+pub struct RegionStats {
+    pub total_chunks: usize,
+    pub deletable_chunks: usize,
+    /// Chunks with an unknown compression scheme, kept verbatim.
+    pub opaque_chunks: usize,
+}
+
+/// Result of a streaming trim of one region file (`rewrite_region_bytes`).
+#[derive(Debug)]
+pub struct RegionRewrite {
+    pub total_chunks: usize,
+    pub deleted_chunks: usize,
+    pub opaque_chunks: usize,
+    pub compression_fallbacks: usize,
+    pub header_write_failures: usize,
+    /// True when at least one chunk was removed, i.e. `bytes` differs from the input.
+    pub modified: bool,
+    pub remaining_chunks: usize,
+    /// The rewritten region file content.
+    pub bytes: Vec<u8>,
+}
+
+/// Reads the whole region file into memory. Peak cost is the file size itself;
+/// callers must not retain every chunk's parsed NBT simultaneously (see
+/// `analyze_region_bytes` / `rewrite_region_bytes` for bounded-memory passes).
+pub fn read_region_file(file_path: &Path) -> Result<Vec<u8>, ParseRegionError> {
+    try_read_bytes(file_path).map_err(|_| ParseRegionError::ReadError)
+}
+
+fn parse_header(bytes: &[u8]) -> Result<(&[u8], &[u8]), ParseRegionError> {
+    if bytes.len() < 8192 {
+        return Err(ParseRegionError::HeaderError);
+    }
+    Ok((&bytes[0..4096], &bytes[4096..8192]))
+}
+
+/// Streaming pass that only counts — no chunk NBT is retained, so memory stays
+/// at O(1) chunks regardless of region size.
+pub fn analyze_region_bytes(bytes: &[u8]) -> Result<RegionStats, ParseRegionError> {
+    let (location_table, timestamp_table) = parse_header(bytes)?;
+    let mut stats = RegionStats::default();
+
+    for i in (0..4096).step_by(4) {
+        let l = get_u32(location_table, i);
+        let timestamp = get_u32(timestamp_table, i);
+        let location = Location::from_bytes(l, timestamp);
+        if !location.is_valid() {
+            continue;
+        }
+        // The chunk is parsed to inspect Status/InhabitedTime, then dropped
+        // immediately — nothing accumulates.
+        if let Ok(chunk) = Chunk::from_location(bytes, location, i) {
+            stats.total_chunks += 1;
+            if chunk.nbt.is_none() {
+                stats.opaque_chunks += 1;
+            }
+            if chunk.should_delete() {
+                stats.deletable_chunks += 1;
+            }
+        }
+        // Unparsable (corrupt) chunks are not counted, mirroring historical behavior.
+    }
+
+    Ok(stats)
+}
+
+/// Streaming trim: each chunk is decoded, evaluated and immediately serialized
+/// back (or dropped), so peak memory is the input buffer plus the output buffer
+/// plus ONE transient chunk — never the whole region's parsed NBT.
+pub fn rewrite_region_bytes(
+    bytes: &[u8],
+    compression: Compression,
+) -> Result<RegionRewrite, ParseRegionError> {
+    let (location_table, timestamp_table) = parse_header(bytes)?;
+    let mut new_location_table = [0_u8; 4096];
+    let mut new_timestamp_table = [0_u8; 4096];
+    let mut data: Vec<u8> = Vec::with_capacity(bytes.len().min(64 * 1024 * 1024));
+
+    let mut outcome = RegionRewrite {
+        total_chunks: 0,
+        deleted_chunks: 0,
+        opaque_chunks: 0,
+        compression_fallbacks: 0,
+        header_write_failures: 0,
+        modified: false,
+        remaining_chunks: 0,
+        bytes: Vec::new(),
+    };
+
+    for i in (0..4096).step_by(4) {
+        let l = get_u32(location_table, i);
+        let timestamp = get_u32(timestamp_table, i);
+        let location = Location::from_bytes(l, timestamp);
+        if !location.is_valid() {
+            continue;
+        }
+
+        let Ok(chunk) = Chunk::from_location(bytes, location, i) else {
+            // Corrupt chunk: dropped from the rewrite, as before.
+            outcome.modified = true;
+            continue;
+        };
+
+        outcome.total_chunks += 1;
+        if chunk.nbt.is_none() {
+            outcome.opaque_chunks += 1;
+        }
+        if chunk.should_delete() {
+            outcome.deleted_chunks += 1;
+            outcome.modified = true;
+            continue; // drop: no payload, no header entry
+        }
+        outcome.remaining_chunks += 1;
+
+        let mut serialized = match chunk.to_bytes(compression) {
+            Ok(new_bytes) => {
+                // Recompression must never make a chunk larger than it was:
+                // keep the original compressed bytes verbatim when they win.
+                let original = chunk.to_original_bytes();
+                if original.len() < new_bytes.len() {
+                    original
+                } else {
+                    new_bytes
+                }
+            }
+            Err(_) => {
+                outcome.compression_fallbacks += 1;
+                chunk.to_original_bytes()
+            }
+        };
+        align_vec_size(&mut serialized);
+
+        let new_position = (data.len() + 8192) as u32;
+        let Ok(new_location) = Location::new(new_position, serialized.len() as u32, timestamp)
+        else {
+            outcome.header_write_failures += 1;
+            continue;
+        };
+        new_location_table[i..i + 4].copy_from_slice(&new_location.to_location_bytes());
+        new_timestamp_table[i..i + 4].copy_from_slice(&new_location.to_timestamp_bytes());
+        data.extend_from_slice(&serialized);
+
+        drop(chunk); // release this chunk's parsed NBT before the next iteration
+    }
+
+    let mut out = Vec::with_capacity(8192 + data.len());
+    out.extend_from_slice(&new_location_table);
+    out.extend_from_slice(&new_timestamp_table);
+    out.extend(data);
+    outcome.bytes = out;
+
+    Ok(outcome)
+}
+
+#[cfg(test)]
 impl Region {
     pub fn from_file_name(file_name: &Path) -> Result<Self, ParseRegionError> {
         let bytes = try_read_bytes(file_name).map_err(|_| ParseRegionError::ReadError)?;
@@ -72,7 +234,18 @@ impl Region {
 
         for chunk in &self.chunks {
             let mut serialized = match chunk.to_bytes(compression) {
-                Ok(bytes) => bytes,
+                Ok(bytes) => {
+                    // Recompression must never make a chunk larger than it was:
+                    // if the original compressed payload is smaller (e.g. an
+                    // already well-compressed chunk at a low target level),
+                    // keep the original bytes verbatim.
+                    let original = chunk.to_original_bytes();
+                    if original.len() < bytes.len() {
+                        original
+                    } else {
+                        bytes
+                    }
+                }
                 Err(_) => {
                     compression_fallbacks += 1;
                     chunk.to_original_bytes()
@@ -128,21 +301,6 @@ impl Region {
     pub fn get_chunk_count(&self) -> usize {
         self.chunks.len()
     }
-
-    pub fn remove_chunk_by_index(&mut self, index: usize) {
-        self.chunks.remove(index);
-        if !self.is_modified {
-            self.is_modified = true;
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.chunks.is_empty()
-    }
-
-    pub fn is_modified(&self) -> bool {
-        self.is_modified
-    }
 }
 
 fn align_vec_size(vec: &mut Vec<u8>) {
@@ -150,15 +308,31 @@ fn align_vec_size(vec: &mut Vec<u8>) {
     vec.resize(aligned_size, 0);
 }
 
+const MAX_REGION_FILE_SIZE: u64 = 1_000_000_000 + 8192;
+
 fn try_read_bytes(file_path: &Path) -> std::io::Result<Vec<u8>> {
-    let estimated_len = std::fs::metadata(file_path)
-        .map(|m| m.len() as usize)
-        .unwrap_or(0)
-        .min(1_000_000_000);
+    let metadata = std::fs::metadata(file_path)?;
+    if metadata.len() > MAX_REGION_FILE_SIZE {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "region file too large ({} bytes > {} limit)",
+                metadata.len(),
+                MAX_REGION_FILE_SIZE
+            ),
+        ));
+    }
+    let estimated_len = (metadata.len() as usize).min(1_000_000_000);
 
     let mut file = File::open(file_path)?;
     let mut buf = Vec::with_capacity(estimated_len);
     file.read_to_end(&mut buf)?;
+    if buf.len() as u64 > MAX_REGION_FILE_SIZE {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "region file exceeds size limit after read",
+        ));
+    }
     Ok(buf)
 }
 

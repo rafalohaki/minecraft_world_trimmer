@@ -9,6 +9,31 @@ use flate2::read::{GzDecoder, GzEncoder, ZlibDecoder, ZlibEncoder};
 use lz4_flex::frame::FrameDecoder;
 use std::io::Read;
 
+/// Hard cap for a single chunk's decompressed NBT. A vanilla chunk decompresses
+/// to well under 5 MiB; 32 MiB leaves headroom for heavily modded worlds while
+/// preventing a zip-bomb (crafted payload claiming 2 GiB) from OOMing the
+/// trimmer. One malicious chunk could otherwise allocate gigabytes and, with
+/// 16 rayon threads, drive RSS past 40 GB.
+const MAX_DECOMPRESSED_CHUNK_BYTES: usize = 32 * 1024 * 1024;
+
+fn read_limited<R: Read>(mut reader: R) -> std::io::Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    // +1 so we can detect overflow: if we read more than the limit, we know it
+    // exceeded and can fail instead of silently truncating.
+    let mut limited = (&mut reader).take(MAX_DECOMPRESSED_CHUNK_BYTES as u64 + 1);
+    limited.read_to_end(&mut buf)?;
+    if buf.len() > MAX_DECOMPRESSED_CHUNK_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "decompressed chunk exceeds {} MiB limit",
+                MAX_DECOMPRESSED_CHUNK_BYTES / (1024 * 1024)
+            ),
+        ));
+    }
+    Ok(buf)
+}
+
 #[derive(PartialEq, Debug, Clone)]
 pub struct Chunk {
     /// Parsed chunk NBT. `None` for chunks we cannot decode (e.g. compression
@@ -81,37 +106,99 @@ impl Chunk {
             }
         };
 
-        // Depending on the compression scheme, read the data
+        // Depending on the compression scheme, read the data. Every path is
+        // bounded by `MAX_DECOMPRESSED_CHUNK_BYTES` so a single corrupt/malicious
+        // chunk cannot balloon RSS.
         let decoded_bytes = match compression_scheme {
             CompressionScheme::Gzip => {
-                let mut decoder = GzDecoder::new(raw_first_chunk);
-                let mut bytes = Vec::new();
-                decoder.read_to_end(&mut bytes).map(|_| bytes)
+                let decoder = GzDecoder::new(raw_first_chunk);
+                read_limited(decoder)
             }
             CompressionScheme::Zlib => {
-                let mut decoder = ZlibDecoder::new(raw_first_chunk);
-                let mut bytes = Vec::new();
-                decoder.read_to_end(&mut bytes).map(|_| bytes)
+                let decoder = ZlibDecoder::new(raw_first_chunk);
+                read_limited(decoder)
             }
-            CompressionScheme::Uncompressed => Ok(raw_first_chunk.to_vec()),
+            CompressionScheme::Uncompressed => {
+                if raw_first_chunk.len() > MAX_DECOMPRESSED_CHUNK_BYTES {
+                    return Ok(Self {
+                        nbt: None,
+                        location,
+                        table_position,
+                        original_scheme_byte: compression_scheme_byte,
+                        original_payload,
+                    });
+                } else {
+                    Ok(raw_first_chunk.to_vec())
+                }
+            }
             CompressionScheme::Lz4 => {
-                // Najpierw próbujemy dekodera "frame"
-                let mut decoder = FrameDecoder::new(raw_first_chunk);
-                let mut bytes = Vec::new();
-                match decoder.read_to_end(&mut bytes) {
-                    Ok(_) => Ok(bytes),
+                // Najpierw próbujemy dekodera "frame" (streaming, bounded)
+                let decoder = FrameDecoder::new(raw_first_chunk);
+                match read_limited(decoder) {
+                    Ok(bytes) => Ok(bytes),
                     Err(_) => {
-                        // Fallback: spróbuj trybu "block" z rozmiarem poprzedzającym (size-prepended)
-                        lz4_flex::block::decompress_size_prepended(raw_first_chunk).map_err(|_| {
-                            std::io::Error::new(
-                                std::io::ErrorKind::InvalidData,
-                                "LZ4 block decompress failed",
-                            )
-                        })
+                        // Fallback: spróbuj trybu "block" z rozmiarem poprzedzającym (size-prepended).
+                        // `decompress_size_prepended` reads the 4-byte LE size prefix and
+                        // allocates that much — guard the prefix before calling it.
+                        if raw_first_chunk.len() >= 4 {
+                            let claimed = u32::from_le_bytes(
+                                raw_first_chunk[0..4].try_into().unwrap_or([0; 4]),
+                            ) as usize;
+                            if claimed > MAX_DECOMPRESSED_CHUNK_BYTES {
+                                return Ok(Self {
+                                    nbt: None,
+                                    location,
+                                    table_position,
+                                    original_scheme_byte: compression_scheme_byte,
+                                    original_payload,
+                                });
+                            }
+                        }
+                        if raw_first_chunk.len() > MAX_DECOMPRESSED_CHUNK_BYTES + 1024 * 1024 {
+                            return Ok(Self {
+                                nbt: None,
+                                location,
+                                table_position,
+                                original_scheme_byte: compression_scheme_byte,
+                                original_payload,
+                            });
+                        }
+                        lz4_flex::block::decompress_size_prepended(raw_first_chunk)
+                            .map_err(|_| {
+                                std::io::Error::new(
+                                    std::io::ErrorKind::InvalidData,
+                                    "LZ4 block decompress failed",
+                                )
+                            })
+                            .and_then(|v| {
+                                if v.len() > MAX_DECOMPRESSED_CHUNK_BYTES {
+                                    Err(std::io::Error::new(
+                                        std::io::ErrorKind::InvalidData,
+                                        "LZ4 block decompressed size exceeds limit",
+                                    ))
+                                } else {
+                                    Ok(v)
+                                }
+                            })
                     }
                 }
             }
         };
+
+        // Decompression limit exceeded → preserve verbatim as opaque (never deleted).
+        // This keeps the trimmer safe for heavily modded chunks that legitimately
+        // need >32 MiB, and prevents a crafted zip-bomb from OOMing the process.
+        if let Err(ref e) = decoded_bytes
+            && e.to_string().contains("exceeds")
+        {
+            return Ok(Self {
+                nbt: None,
+                location,
+                table_position,
+                original_scheme_byte: compression_scheme_byte,
+                original_payload,
+            });
+        }
 
         // Convert to string
         let nbt = decoded_bytes
@@ -173,6 +260,7 @@ impl Chunk {
     }
 
     /// Byte index of this chunk's entry in the region location table.
+    #[cfg(test)]
     pub fn get_table_position(&self) -> usize {
         self.table_position
     }

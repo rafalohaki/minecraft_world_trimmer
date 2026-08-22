@@ -1,5 +1,5 @@
 use crate::commands::optimize_result::{OptimizeResult, reduce_optimize_results};
-use crate::region_loader::region::{ParseRegionError, Region};
+use crate::region_loader::region::{ParseRegionError, analyze_region_bytes, read_region_file};
 use crate::world::get_region_files::get_region_files;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::iter::ParallelIterator;
@@ -34,20 +34,12 @@ pub fn execute_read(world_paths: &[PathBuf]) -> Result<(), Box<dyn Error>> {
 fn optimize_read(region_file_path: &Path) -> OptimizeResult {
     let mut result = OptimizeResult::default();
 
-    match Region::from_file_name(region_file_path) {
-        Ok(region) => {
-            let chunks = region.get_chunks();
-            result.total_chunks += chunks.len();
-
-            for chunk in chunks {
-                if chunk.should_delete() {
-                    result.deleted_chunks += 1;
-                }
-                if chunk.nbt.is_none() {
-                    result.preserved_opaque_chunks += 1;
-                }
-            }
-            if result.deleted_chunks >= result.total_chunks {
+    match read_region_file(region_file_path).and_then(|bytes| analyze_region_bytes(&bytes)) {
+        Ok(stats) => {
+            result.total_chunks += stats.total_chunks;
+            result.deleted_chunks += stats.deletable_chunks;
+            result.preserved_opaque_chunks += stats.opaque_chunks;
+            if stats.deletable_chunks >= stats.total_chunks {
                 result.deleted_regions += 1;
             }
         }

@@ -1,5 +1,5 @@
 use crate::commands::optimize_result::{OptimizeResult, reduce_optimize_results};
-use crate::region_loader::region::{ParseRegionError, Region};
+use crate::region_loader::region::{ParseRegionError, read_region_file, rewrite_region_bytes};
 use crate::world::get_region_files::get_region_files;
 use flate2::Compression;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -97,73 +97,12 @@ fn optimize_write(
 ) -> OptimizeResult {
     let mut result = OptimizeResult::default();
 
-    match Region::from_file_name(region_file_path) {
-        Ok(mut region) => {
-            result.total_chunks += region.get_chunk_count();
-            result.preserved_opaque_chunks += region
-                .get_chunks()
-                .iter()
-                .filter(|chunk| chunk.nbt.is_none())
-                .count();
-
-            let chunks_to_delete_indices: Vec<_> = region
-                .get_chunks()
-                .iter()
-                .enumerate()
-                .filter_map(|(i, chunk)| if chunk.should_delete() { Some(i) } else { None })
-                .collect();
-            result.deleted_chunks += chunks_to_delete_indices.len();
-
-            for &index in chunks_to_delete_indices.iter().rev() {
-                region.remove_chunk_by_index(index);
-            }
-
-            if region.is_empty() {
-                let removal = match backup_dir {
-                    Some(backup_root) => {
-                        quarantine_original(region_file_path, backup_root, world_paths).map(|_| ())
-                    }
-                    None => std::fs::remove_file(region_file_path),
-                };
-                match removal {
-                    Ok(()) => result.deleted_regions += 1,
-                    Err(_) => result.io_errors += 1,
-                }
-            } else if region.is_modified() {
-                // With a backup dir configured, never destroy the original without
-                // having moved it aside first.
-                if let Some(backup_root) = backup_dir
-                    && quarantine_original(region_file_path, backup_root, world_paths).is_err()
-                {
-                    result.io_errors += 1;
-                    eprintln!(
-                        "Failed to quarantine original before rewrite: {:?}",
-                        region_file_path
-                    );
-                    return result;
-                }
-                let to_bytes = region.to_bytes(compression);
-                if to_bytes.compression_fallbacks > 0 {
-                    result.compression_failures += to_bytes.compression_fallbacks;
-                    result.regions_with_compression_issues += 1;
-                    eprintln!(
-                        "Compression fallback in {} chunk(s) for {:?}",
-                        to_bytes.compression_fallbacks, region_file_path
-                    );
-                }
-                if to_bytes.header_write_failures > 0 {
-                    result.header_write_failures += to_bytes.header_write_failures;
-                    result.regions_with_header_issues += 1;
-                    eprintln!(
-                        "Header write failure: skipped payload for {} chunk(s) in {:?}",
-                        to_bytes.header_write_failures, region_file_path
-                    );
-                }
-                if atomic_write_region(region_file_path, &to_bytes.bytes).is_err() {
-                    result.io_errors += 1;
-                }
-            }
-        }
+    // Streaming trim: the whole region's parsed NBT is never held in memory —
+    // each chunk is decoded, evaluated and serialized one at a time.
+    let outcome = match read_region_file(region_file_path)
+        .and_then(|bytes| rewrite_region_bytes(&bytes, compression))
+    {
+        Ok(outcome) => outcome,
         Err(ParseRegionError::HeaderError) => {
             let removal = match backup_dir {
                 Some(backup_root) => {
@@ -175,10 +114,69 @@ fn optimize_write(
                 Ok(()) => result.deleted_regions += 1,
                 Err(_) => result.io_errors += 1,
             }
+            return result;
         }
         Err(ParseRegionError::ReadError) => {
             result.io_errors += 1;
+            return result;
         }
+    };
+
+    result.total_chunks += outcome.total_chunks;
+    result.deleted_chunks += outcome.deleted_chunks;
+    result.preserved_opaque_chunks += outcome.opaque_chunks;
+
+    if outcome.remaining_chunks == 0 {
+        // Every chunk was removed (or the region had none): the whole region
+        // file goes away.
+        let removal = match backup_dir {
+            Some(backup_root) => {
+                quarantine_original(region_file_path, backup_root, world_paths).map(|_| ())
+            }
+            None => std::fs::remove_file(region_file_path),
+        };
+        match removal {
+            Ok(()) => result.deleted_regions += 1,
+            Err(_) => result.io_errors += 1,
+        }
+        return result;
+    }
+
+    if !outcome.modified {
+        // Nothing changed — leave the original file untouched.
+        return result;
+    }
+
+    // With a backup dir configured, never destroy the original without
+    // having moved it aside first.
+    if let Some(backup_root) = backup_dir
+        && quarantine_original(region_file_path, backup_root, world_paths).is_err()
+    {
+        result.io_errors += 1;
+        eprintln!(
+            "Failed to quarantine original before rewrite: {:?}",
+            region_file_path
+        );
+        return result;
+    }
+    if outcome.compression_fallbacks > 0 {
+        result.compression_failures += outcome.compression_fallbacks;
+        result.regions_with_compression_issues += 1;
+        eprintln!(
+            "Compression fallback in {} chunk(s) for {:?}",
+            outcome.compression_fallbacks, region_file_path
+        );
+    }
+    if outcome.header_write_failures > 0 {
+        result.header_write_failures += outcome.header_write_failures;
+        result.regions_with_header_issues += 1;
+        eprintln!(
+            "Header write failure: skipped payload for {} chunk(s) in {:?}",
+            outcome.header_write_failures, region_file_path
+        );
+    }
+    if atomic_write_region(region_file_path, &outcome.bytes).is_err() {
+        result.io_errors += 1;
     }
 
     result
@@ -210,7 +208,11 @@ fn atomic_write_region(region_file_path: &Path, payload: &[u8]) -> std::io::Resu
 
     let write_result = (|| -> std::io::Result<()> {
         let file = File::create(&tmp_path)?;
-        let mut writer = BufWriter::with_capacity(32 * 1024 * 1024, file);
+        // 128 KiB is plenty: `payload` is written via a single `write_all`, so the
+        // buffer only needs to cover syscall coalescing. 32 MiB previously used
+        // here multiplied peak RSS by ~32 MiB per rayon writer thread (≈512 MiB
+        // on a 16-core machine) with no measurable throughput gain.
+        let mut writer = BufWriter::with_capacity(128 * 1024, file);
         writer.write_all(payload)?;
         writer.flush()?;
         let file = writer.into_inner().map_err(|e| e.into_error())?;
@@ -260,6 +262,7 @@ fn tempfile_path_for(target: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::region_loader::region::Region;
 
     #[test]
     fn test_tempfile_path_is_sibling() {

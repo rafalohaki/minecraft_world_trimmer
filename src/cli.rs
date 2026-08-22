@@ -17,8 +17,9 @@ pub struct Cli {
     #[arg(required = true)]
     pub world_paths: Vec<PathBuf>,
 
-    /// Compression level when writing region files
-    #[arg(short, long, default_value = "6", value_parser = validate_compression_level)]
+    /// Compression level when writing region files. Levels 1–3 are significantly
+    /// faster with only marginally larger output; 9 is extremely slow.
+    #[arg(short, long, default_value = "3", value_parser = validate_compression_level)]
     pub compression_level: u32,
 
     /// Quarantine directory for original region files. When set, every region file

@@ -53,6 +53,7 @@ impl Location {
         self.offset * 4096
     }
 
+    #[cfg(test)]
     pub fn get_timestamp(&self) -> u32 {
         self.timestamp
     }
