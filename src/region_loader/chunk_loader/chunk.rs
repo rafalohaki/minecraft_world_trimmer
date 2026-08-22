@@ -284,7 +284,11 @@ impl Chunk {
     }
 
     fn has_been_inhabited(&self) -> bool {
-        // The InhabitedTime value seems to be incremented for all 8 chunks around a player (including the one the player is standing in)
+        // InhabitedTime is in ticks (20/s). Previous `> 0` kept even a 0.05s fly-over.
+        // 30s (600 ticks) = przelot elytrą; 60s (1200) = krótki postój. Poniżej progu
+        // chunk z `Status != full` jest nadal pusty i bezpieczny do skasowania
+        // (postawienie bloku i tak ustawia `Status == full` i chroni).
+        const INHABITED_THRESHOLD_TICKS: i64 = 600; // 30s
         match self
             .nbt
             .as_ref()
@@ -292,7 +296,7 @@ impl Chunk {
             .and_then(|tag| tag.get_long())
             .copied()
         {
-            Some(inhabited_time) => inhabited_time > 0,
+            Some(inhabited_time) => inhabited_time > INHABITED_THRESHOLD_TICKS,
             // Every vanilla chunk carries this tag; its absence means we do not
             // understand the format — err on the side of keeping the chunk.
             None => true,
