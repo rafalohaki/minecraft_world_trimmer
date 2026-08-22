@@ -24,9 +24,10 @@ The trimmer operates in-place, replacing original region files with trimmed ones
 
 ## Supported Compression Algorithms
 
-Minecraft stores chunk data in region files using multiple compression schemes.
+Minecraft stores chunk data in region files using multiple compression schemes
+(`1` = GZip, `2` = Zlib, `3` = Uncompressed, `4` = LZ4).
 
-- Read support: `Zlib`, `GZip`, and `LZ4`.
+- Read support: `Zlib`, `GZip`, `Uncompressed`, and `LZ4`.
   - LZ4 is supported both as framed (`lz4 frame`) and as size-prepended block payloads. If framed decoding fails, we
     automatically fall back to size-prepended block decoding.
 - Write (recompression) behavior:
@@ -35,15 +36,19 @@ Minecraft stores chunk data in region files using multiple compression schemes.
   - If recompression fails for a chunk, we do not drop your data: the original compressed bytes and their compression
     scheme are preserved and written back verbatim (including `LZ4` payloads). This is a fallback path intended to keep
     worlds safe.
+  - Chunks stored with an unknown or custom compression scheme (scheme byte `127`, used by some third-party servers)
+    cannot be decoded by any tool other than the server itself. The trimmer therefore keeps such chunks untouched:
+    they are never deleted and are written back byte-for-byte.
 
 Important:
 - We do not proactively recompress chunks to `LZ4`. LZ4 appears only when the original chunk was already LZ4-compressed
   and we take the fallback path that preserves original bytes.
-- Worlds using custom or unsupported compression schemes may still be at risk. While we do our best to decode
-  recognized formats and preserve original bytes on errors, unusual formats could lead to skipped recompression or
-  removal in trimming scenarios. Always keep backups.
+- Worlds using custom or unsupported compression schemes may still be at risk when *trimming* applies to them — those
+  chunks are preserved as-is but their generation status cannot be inspected, so they are always kept.
 
-The Minecraft World Trimmer has only been successfully tested on 1.20.6 and 1.21 vanilla worlds.
+The Minecraft World Trimmer has been successfully tested on 1.20.6 and 1.21 vanilla worlds and supports both the
+classic world layout (`region/`, `DIM-1/`, `DIM1/`) and the layout introduced in 26.1
+(`dimensions/minecraft/overworld` etc., including custom/modded dimensions under `dimensions/<namespace>/<dimension>`).
 
 ## Expected Results
 

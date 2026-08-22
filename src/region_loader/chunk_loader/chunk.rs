@@ -11,17 +11,28 @@ use std::io::Read;
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct Chunk {
-    pub nbt: Tag,
+    /// Parsed chunk NBT. `None` for chunks we cannot decode (e.g. compression
+    /// scheme 127, a server-specific custom algorithm) — those are preserved
+    /// verbatim and never deleted, so no data is lost on rewrite.
+    pub nbt: Option<Tag>,
     pub location: Location,
-    // Original compressed payload and its scheme, used when recompression fails
-    original_compression_scheme: CompressionScheme,
+    /// Byte index of this chunk's entry in the region location table.
+    table_position: usize,
+    /// Original compression scheme byte as stored in the file (may be unknown).
+    original_scheme_byte: u8,
+    /// Original compressed payload and its scheme, used when recompression fails
+    /// or the chunk is opaque (unknown scheme).
     original_payload: Vec<u8>,
 }
 
 impl Chunk {
     const STATUS_FULL: &'static str = "minecraft:full";
 
-    pub fn from_location(buf: &[u8], location: Location) -> Result<Self, &'static str> {
+    pub fn from_location(
+        buf: &[u8],
+        location: Location,
+        table_position: usize,
+    ) -> Result<Self, &'static str> {
         // Chunk header parsing z ochroną zakresów
         let offset = location.get_offset() as usize;
 
@@ -39,7 +50,7 @@ impl Chunk {
         if compression_scheme_index >= buf.len() {
             return Err("Compression scheme out of bounds");
         }
-        let compression_scheme = CompressionScheme::from_u8(buf[compression_scheme_index])?;
+        let compression_scheme_byte = buf[compression_scheme_index];
 
         // Dane chunka: payload ma długość (chunk_size - 1)
         let header_size = 5; // 4 bajty rozmiaru + 1 bajt schematu
@@ -57,6 +68,19 @@ impl Chunk {
         let raw_first_chunk = &buf[start..end];
         let original_payload = raw_first_chunk.to_vec();
 
+        let compression_scheme = match CompressionScheme::from_u8(compression_scheme_byte) {
+            Ok(scheme) => scheme,
+            Err(_) => {
+                return Ok(Self {
+                    nbt: None,
+                    location,
+                    table_position,
+                    original_scheme_byte: compression_scheme_byte,
+                    original_payload,
+                });
+            }
+        };
+
         // Depending on the compression scheme, read the data
         let decoded_bytes = match compression_scheme {
             CompressionScheme::Gzip => {
@@ -69,6 +93,7 @@ impl Chunk {
                 let mut bytes = Vec::new();
                 decoder.read_to_end(&mut bytes).map(|_| bytes)
             }
+            CompressionScheme::Uncompressed => Ok(raw_first_chunk.to_vec()),
             CompressionScheme::Lz4 => {
                 // Najpierw próbujemy dekodera "frame"
                 let mut decoder = FrameDecoder::new(raw_first_chunk);
@@ -90,42 +115,51 @@ impl Chunk {
                 let mut binary_reader = BinaryReader::new(&bytes);
                 parse_tag(&mut binary_reader)
                     .map_err(|e| std::io::Error::new(
-                        std::io::ErrorKind::InvalidData, 
+                        std::io::ErrorKind::InvalidData,
                         format!("NBT parse error: {}", e)
                     ))
             })
             .map_err(|_| "Error while parsing NBT")?;
 
         Ok(Self {
-            nbt,
+            nbt: Some(nbt),
             location,
-            original_compression_scheme: compression_scheme,
+            table_position,
+            original_scheme_byte: compression_scheme_byte,
             original_payload,
         })
     }
 
     pub fn to_bytes(&self, compression: Compression) -> Result<Vec<u8>, &'static str> {
-        let decoded_bytes = self.nbt.to_bytes();
+        let Some(nbt) = &self.nbt else {
+            // Opaque chunk (unknown/custom compression scheme): preserve verbatim
+            return Ok(self.to_original_bytes());
+        };
+        let decoded_bytes = nbt.to_bytes();
         // Try Zlib first; if it fails, fall back to Gzip. If both fail,
         // do not write mismatched header/payload — propagate error to leave chunk unchanged.
         let mut zlib_encoder = ZlibEncoder::new(&decoded_bytes[..], compression);
         let mut zlib_bytes = Vec::new();
         match zlib_encoder.read_to_end(&mut zlib_bytes) {
-            Ok(_) => Ok(self.to_bytes_compression_scheme(CompressionScheme::Zlib, &zlib_bytes)),
+            Ok(_) => Ok(Self::frame(CompressionScheme::Zlib.to_u8(), &zlib_bytes)),
             Err(_) => {
                 let mut gzip_encoder = GzEncoder::new(&decoded_bytes[..], compression);
                 let mut gzip_bytes = Vec::new();
                 match gzip_encoder.read_to_end(&mut gzip_bytes) {
-                    Ok(_) => Ok(self.to_bytes_compression_scheme(CompressionScheme::Gzip, &gzip_bytes)),
+                    Ok(_) => Ok(Self::frame(CompressionScheme::Gzip.to_u8(), &gzip_bytes)),
                     Err(_) => Err("Compression failed for both Zlib and Gzip"),
                 }
             }
         }
     }
 
+    /// Chunk coordinates from the parsed NBT. Kept for diagnostics/tests; region
+    /// serialization uses the stored location-table index instead.
+    #[allow(dead_code)]
     pub fn get_position(&self) -> Result<(i32, i32), &'static str> {
-        let x_pos_tag = self.nbt.find_tag("xPos").and_then(|v| v.get_int());
-        let z_pos_tag = self.nbt.find_tag("zPos").and_then(|v| v.get_int());
+        let nbt = self.nbt.as_ref().ok_or("Chunk has no parsed NBT")?;
+        let x_pos_tag = nbt.find_tag("xPos").and_then(|v| v.get_int());
+        let z_pos_tag = nbt.find_tag("zPos").and_then(|v| v.get_int());
 
         match (x_pos_tag, z_pos_tag) {
             (Some(x), Some(z)) => Ok((*x, *z)),
@@ -133,14 +167,23 @@ impl Chunk {
         }
     }
 
-    /// Checks if a chunk is not fully generated and has never been inhabited
+    /// Byte index of this chunk's entry in the region location table.
+    pub fn get_table_position(&self) -> usize {
+        self.table_position
+    }
+
+    /// Checks if a chunk is not fully generated and has never been inhabited.
+    /// Opaque chunks (unknown compression scheme) are never deleted.
     pub fn should_delete(&self) -> bool {
-        !self.is_fully_generated() && !self.has_been_inhabited()
+        self.nbt.is_some()
+            && !self.is_fully_generated()
+            && !self.has_been_inhabited()
     }
 
     fn is_fully_generated(&self) -> bool {
         self.nbt
-            .find_tag("Status")
+            .as_ref()
+            .and_then(|nbt| nbt.find_tag("Status"))
             .and_then(|tag| tag.get_string())
             .map(|status| status == Chunk::STATUS_FULL)
             .unwrap_or(false) // if the tag is not present, we can assume that the chunk is not fully generated
@@ -150,7 +193,8 @@ impl Chunk {
         // The InhabitedTime value seems to be incremented for all 8 chunks around a player (including the one the player is standing in)
         let inhabited_time = self
             .nbt
-            .find_tag("InhabitedTime")
+            .as_ref()
+            .and_then(|nbt| nbt.find_tag("InhabitedTime"))
             .and_then(|tag| tag.get_long())
             .copied()
             .unwrap_or(0); // If the tag is not present, we can assume that the chunk has never been inhabited
@@ -159,18 +203,14 @@ impl Chunk {
     }
 
     pub fn to_original_bytes(&self) -> Vec<u8> {
-        self.to_bytes_compression_scheme(self.original_compression_scheme, &self.original_payload)
+        Self::frame(self.original_scheme_byte, &self.original_payload)
     }
 
-    fn to_bytes_compression_scheme(
-        &self,
-        compression_scheme: CompressionScheme,
-        nbt_bytes: &[u8],
-    ) -> Vec<u8> {
-        let size = (nbt_bytes.len() + 1/* including the compression scheme byte */) as u32;
+    fn frame(scheme_byte: u8, payload: &[u8]) -> Vec<u8> {
+        let size = (payload.len() + 1/* including the compression scheme byte */) as u32;
         let mut result = Vec::from(size.to_be_bytes());
-        result.push(compression_scheme.to_u8()); // adding the compression scheme byte
-        result.extend_from_slice(nbt_bytes);
+        result.push(scheme_byte); // adding the compression scheme byte
+        result.extend_from_slice(payload);
         result
     }
 }

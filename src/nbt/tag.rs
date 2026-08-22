@@ -68,6 +68,7 @@ impl Tag {
         }
     }
 
+    #[allow(dead_code)]
     pub fn get_int(&self) -> Option<&i32> {
         match self {
             Tag::Int { value, .. } => Some(value),
