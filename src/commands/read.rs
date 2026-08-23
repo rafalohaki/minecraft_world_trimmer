@@ -8,7 +8,8 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 
 pub fn execute_read(world_paths: &[PathBuf]) -> Result<(), Box<dyn Error>> {
-    let entries = get_region_files(world_paths)?;
+    let world = get_region_files(world_paths)?;
+    let entries = &world.region_files;
     let pb = ProgressBar::new(entries.len() as u64);
     let style = ProgressStyle::with_template(
         "{percent}% {bar} {pos}/{len} [{elapsed_precise}>{eta_precise}, {per_sec}]",
@@ -25,11 +26,13 @@ pub fn execute_read(world_paths: &[PathBuf]) -> Result<(), Box<dyn Error>> {
         })
         .collect::<Vec<OptimizeResult>>();
 
+    pb.finish();
     let result = reduce_optimize_results(&mut results);
     println!("{result}");
 
     Ok(())
 }
+
 
 fn optimize_read(region_file_path: &Path) -> OptimizeResult {
     let mut result = OptimizeResult::default();
@@ -39,6 +42,7 @@ fn optimize_read(region_file_path: &Path) -> OptimizeResult {
             result.total_chunks += stats.total_chunks;
             result.deleted_chunks += stats.deletable_chunks;
             result.preserved_opaque_chunks += stats.opaque_chunks;
+            result.corrupt_chunks += stats.corrupt_chunks;
             if stats.deletable_chunks >= stats.total_chunks {
                 result.deleted_regions += 1;
             }

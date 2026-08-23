@@ -13,6 +13,10 @@ use rayon::ThreadPoolBuilder;
 
 fn main() {
     let cli = Cli::parse();
+    if let Err(msg) = cli.validate() {
+        eprintln!("{msg}");
+        std::process::exit(2);
+    }
 
     let cpus = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -35,5 +39,6 @@ fn main() {
 
     if let Err(err) = result {
         eprintln!("{err}");
+        std::process::exit(1);
     }
 }

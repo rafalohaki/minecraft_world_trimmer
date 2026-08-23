@@ -1,13 +1,48 @@
+use crate::world::session_lock::{SessionLock, acquire_session_lock};
 use crate::world::validate::validate_worlds;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
-pub fn get_region_files(world_paths: &[PathBuf]) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+/// Region files of every world, deduplicated, plus the session-lock handles
+/// that must stay alive while those files are processed.
+#[derive(Debug)]
+pub struct WorldRegions {
+    pub region_files: Vec<PathBuf>,
+    // Field order matters: locks are released (files closed) after the
+    // region list is no longer used.
+    _locks: Vec<SessionLock>,
+}
+
+pub fn get_region_files(world_paths: &[PathBuf]) -> Result<WorldRegions, Box<dyn Error>> {
     let worlds = validate_worlds(world_paths)?;
-    Ok(worlds
+
+    // Deduplicate world roots first: the same directory listed twice must be
+    // locked once (a second exclusive flock on an independent open would
+    // conflict with our own first lock).
+    let mut seen_worlds = std::collections::HashSet::new();
+    let unique_worlds: Vec<&PathBuf> = worlds
+        .iter()
+        .filter(|w| seen_worlds.insert((*w).clone()))
+        .collect();
+
+    // Lock every world BEFORE listing any file: if a server is running on any
+    // of them we abort before touching anything.
+    let mut locks = Vec::with_capacity(unique_worlds.len());
+    for world in &unique_worlds {
+        locks.push(acquire_session_lock(world)?);
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    let region_files = worlds
         .iter()
         .flat_map(|world| get_region_files_from_world(world))
-        .collect::<Vec<_>>())
+        .filter(|path| seen.insert(path.clone()))
+        .collect::<Vec<_>>();
+
+    Ok(WorldRegions {
+        region_files,
+        _locks: locks,
+    })
 }
 
 fn get_region_files_from_world(world_dir: &Path) -> Vec<PathBuf> {
@@ -100,6 +135,49 @@ mod tests {
         let tmp = unique_tmp_dir("empty");
         std::fs::create_dir_all(&tmp).unwrap();
         assert!(get_region_files_from_world(&tmp).is_empty());
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// Duplicate world roots must not yield duplicate region files: the same
+    /// .mca processed twice concurrently would race rename/remove against
+    /// itself.
+    #[test]
+    fn test_duplicate_world_roots_deduplicate_region_files() {
+        let tmp = unique_tmp_dir("dedup");
+        let region_dir = tmp.join("region");
+        std::fs::create_dir_all(&region_dir).unwrap();
+        std::fs::write(region_dir.join("r.0.0.mca"), b"x").unwrap();
+        std::fs::write(tmp.join("level.dat"), b"fake").unwrap();
+        let worlds = vec![tmp.clone(), tmp.clone()];
+        let result = get_region_files(&worlds).expect("locks and listing must succeed");
+        assert_eq!(
+            result.region_files.len(),
+            1,
+            "duplicate roots must collapse to one file entry"
+        );
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// A held session.lock (simulating a running server) must abort the scan.
+    #[test]
+    fn test_held_session_lock_aborts() {
+        let tmp = unique_tmp_dir("held");
+        let region_dir = tmp.join("region");
+        std::fs::create_dir_all(&region_dir).unwrap();
+        std::fs::write(region_dir.join("r.0.0.mca"), b"x").unwrap();
+        std::fs::write(tmp.join("level.dat"), b"fake").unwrap();
+
+        let _server_lock = crate::world::session_lock::acquire_session_lock(&tmp)
+            .expect("simulated server lock");
+
+        let worlds = vec![tmp.clone()];
+        let err = get_region_files(&worlds).expect_err("locked world must be refused");
+        assert!(
+            err.to_string().contains("session.lock"),
+            "error must mention session.lock, got: {err}"
+        );
+
         std::fs::remove_dir_all(&tmp).ok();
     }
 }

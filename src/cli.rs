@@ -4,7 +4,7 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(
     name = "minecraft_world_trimmer",
-    version = "1.0",
+    version = env!("CARGO_PKG_VERSION"),
     about = "Optimizing Minecraft worlds by deleting unused region files and chunks.",
     long_about = None,
 )]
@@ -45,5 +45,24 @@ fn validate_compression_level(s: &str) -> Result<u32, String> {
     match s.parse::<u32>() {
         Ok(level) if level <= 9 => Ok(level),
         _ => Err("Compression level must be an integer between 0 and 9".to_string()),
+    }
+}
+
+impl Cli {
+    /// Rejects flags that only affect write mode when running in check mode,
+    /// instead of silently ignoring them.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.mode == Mode::Check {
+            // A non-default compression level was passed explicitly.
+            if self.compression_level != 3 {
+                return Err(
+                    "--compression-level has no effect in check mode (nothing is written)".into(),
+                );
+            }
+            if self.backup_dir.is_some() {
+                return Err("--backup-dir has no effect in check mode (nothing is written)".into());
+            }
+        }
+        Ok(())
     }
 }

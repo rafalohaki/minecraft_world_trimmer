@@ -24,7 +24,7 @@ fn read_limited<R: Read>(mut reader: R) -> std::io::Result<Vec<u8>> {
     limited.read_to_end(&mut buf)?;
     if buf.len() > MAX_DECOMPRESSED_CHUNK_BYTES {
         return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
+            std::io::ErrorKind::FileTooLarge,
             format!(
                 "decompressed chunk exceeds {} MiB limit",
                 MAX_DECOMPRESSED_CHUNK_BYTES / (1024 * 1024)
@@ -189,8 +189,8 @@ impl Chunk {
         // Decompression limit exceeded → preserve verbatim as opaque (never deleted).
         // This keeps the trimmer safe for heavily modded chunks that legitimately
         // need >32 MiB, and prevents a crafted zip-bomb from OOMing the process.
-        if let Err(ref e) = decoded_bytes
-            && e.to_string().contains("exceeds")
+        if let Err(e) = &decoded_bytes
+            && e.kind() == std::io::ErrorKind::FileTooLarge
         {
             return Ok(Self {
                 nbt: None,

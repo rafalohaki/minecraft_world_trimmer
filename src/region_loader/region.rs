@@ -39,6 +39,8 @@ pub struct RegionStats {
     pub deletable_chunks: usize,
     /// Chunks with an unknown compression scheme, kept verbatim.
     pub opaque_chunks: usize,
+    /// Chunks present in the location table but unparsable (corrupt payload).
+    pub corrupt_chunks: usize,
 }
 
 /// Result of a streaming trim of one region file (`rewrite_region_bytes`).
@@ -47,6 +49,10 @@ pub struct RegionRewrite {
     pub total_chunks: usize,
     pub deleted_chunks: usize,
     pub opaque_chunks: usize,
+    /// Unparsable chunks found during the rewrite. They are KEPT verbatim:
+    /// silently dropping them on write would destroy data Check reported as
+    /// preserved.
+    pub corrupt_chunks: usize,
     pub compression_fallbacks: usize,
     pub header_write_failures: usize,
     /// True when at least one chunk was removed, i.e. `bytes` differs from the input.
@@ -85,18 +91,19 @@ pub fn analyze_region_bytes(bytes: &[u8]) -> Result<RegionStats, ParseRegionErro
         }
         // The chunk is parsed to inspect Status/InhabitedTime, then dropped
         // immediately — nothing accumulates.
-        if let Ok(chunk) = Chunk::from_location(bytes, location, i) {
-            stats.total_chunks += 1;
-            if chunk.nbt.is_none() {
-                stats.opaque_chunks += 1;
+        match Chunk::from_location(bytes, location, i) {
+            Ok(chunk) => {
+                stats.total_chunks += 1;
+                if chunk.nbt.is_none() {
+                    stats.opaque_chunks += 1;
+                }
+                if chunk.should_delete() {
+                    stats.deletable_chunks += 1;
+                }
             }
-            if chunk.should_delete() {
-                stats.deletable_chunks += 1;
-            }
+            Err(_) => stats.corrupt_chunks += 1,
         }
-        // Unparsable (corrupt) chunks are not counted, mirroring historical behavior.
     }
-
     Ok(stats)
 }
 
@@ -111,11 +118,11 @@ pub fn rewrite_region_bytes(
     let mut new_location_table = [0_u8; 4096];
     let mut new_timestamp_table = [0_u8; 4096];
     let mut data: Vec<u8> = Vec::with_capacity(bytes.len().min(64 * 1024 * 1024));
-
     let mut outcome = RegionRewrite {
         total_chunks: 0,
         deleted_chunks: 0,
         opaque_chunks: 0,
+        corrupt_chunks: 0,
         compression_fallbacks: 0,
         header_write_failures: 0,
         modified: false,
@@ -132,8 +139,10 @@ pub fn rewrite_region_bytes(
         }
 
         let Ok(chunk) = Chunk::from_location(bytes, location, i) else {
-            // Corrupt chunk: dropped from the rewrite, as before.
-            outcome.modified = true;
+            // Corrupt chunk: KEPT verbatim. Dropping it here would silently
+            // destroy data the Check pass reports as preserved.
+            outcome.corrupt_chunks += 1;
+            outcome.total_chunks += 1;
             continue;
         };
 

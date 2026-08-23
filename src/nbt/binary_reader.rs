@@ -30,27 +30,29 @@ macro_rules! impl_read_number {
 
 macro_rules! impl_read_array {
     ($fn_name:ident, $type:ty, $reader:ident) => {
-        pub fn $fn_name(&mut self) -> Vec<$type> {
+        pub fn $fn_name(&mut self) -> Result<Vec<$type>, ReaderError> {
             let elem_size = std::mem::size_of::<$type>();
-            // A negative length means corrupted data; treat it as an empty array
-            // instead of wrapping into an enormous allocation that would abort.
+            // A negative length means corrupted data; vanilla never writes it.
             let size = match self.read_i32() {
                 Ok(s) if s >= 0 => s as usize,
-                _ => return Vec::new(),
+                _ => return Err(ReaderError::UnexpectedEof),
             };
             // Never preallocate more than the remaining input could contain;
-            // the loop below stops at EOF anyway.
+            // the loop below stops at EOF with an error anyway.
             let max_possible = (self.raw.len().saturating_sub(self.index)) / elem_size;
             let mut values = Vec::with_capacity(size.min(max_possible));
 
             for _ in 0..size {
                 match self.$reader() {
                     Ok(next_tag) => values.push(next_tag),
-                    Err(_) => break, // Stop on error
+                    // Truncated array: fail instead of returning fewer
+                    // elements than declared (a shorter re-serialization
+                    // would silently drop chunk data on rewrite).
+                    Err(_) => return Err(ReaderError::UnexpectedEof),
                 }
             }
 
-            values
+            Ok(values)
         }
     };
 }
@@ -76,6 +78,15 @@ impl<'a> BinaryReader<'a> {
         let bytes = &self.raw[self.index..end];
         self.index = end;
         String::from_utf8(bytes.to_vec()).map_err(ReaderError::InvalidUtf8)
+    }
+
+    /// True when the cursor sits exactly on the end of the buffer. Used by the
+    /// compound parser: `UnexpectedEof` with a fully-consumed buffer means the
+    /// payload ended right where a child tag was expected — for legacy files
+    /// missing the final End byte this is tolerated as a clean termination;
+    /// any other EOF position is corruption and must fail.
+    pub fn at_clean_end(&self) -> bool {
+        self.index == self.raw.len()
     }
 
     pub fn read_name(&mut self) -> Option<String> {
@@ -173,26 +184,37 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// Corrupted data claiming a negative array length must yield an empty
-    /// array, not wrap into an enormous allocation that aborts the process.
+    /// Corrupted data claiming a negative array length must fail the parse,
+    /// not wrap into an enormous allocation that aborts the process.
     #[test]
-    fn test_negative_array_length_returns_empty() {
+    fn test_negative_array_length_is_error() {
         let mut data = Vec::new();
         data.extend_from_slice(&(-1_i32).to_be_bytes());
         let mut reader = BinaryReader::new(&data);
-        assert!(reader.read_int_array().is_empty());
-        assert!(reader.read_byte_array().is_empty());
-        assert!(reader.read_long_array().is_empty());
+        assert!(reader.read_int_array().is_err());
+        assert!(reader.read_byte_array().is_err());
+        assert!(reader.read_long_array().is_err());
     }
 
     /// An honest-but-huge length must not preallocate more than the remaining
-    /// input could contain; the returned array is truncated at EOF.
+    /// input could contain; a truncated array is an error, never a short read.
     #[test]
     fn test_oversized_array_length_does_not_oom() {
         let mut data = Vec::new();
         data.extend_from_slice(&i32::MAX.to_be_bytes());
         data.extend_from_slice(&1_i32.to_be_bytes()); // one real element
         let mut reader = BinaryReader::new(&data);
-        assert_eq!(reader.read_int_array(), vec![1]);
+        assert!(reader.read_int_array().is_err());
+    }
+
+    /// A well-formed array parses to its declared contents.
+    #[test]
+    fn test_well_formed_array_roundtrip() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&2_i32.to_be_bytes());
+        data.extend_from_slice(&7_i32.to_be_bytes());
+        data.extend_from_slice(&9_i32.to_be_bytes());
+        let mut reader = BinaryReader::new(&data);
+        assert_eq!(reader.read_int_array().unwrap(), vec![7, 9]);
     }
 }

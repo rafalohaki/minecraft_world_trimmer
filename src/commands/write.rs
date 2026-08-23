@@ -25,7 +25,8 @@ pub fn execute_write(
         std::fs::create_dir_all(backup_root)?;
     }
 
-    let entries = get_region_files(world_paths)?;
+    let world = get_region_files(world_paths)?;
+    let entries = &world.region_files;
     let pb = ProgressBar::new(entries.len() as u64);
     let style = ProgressStyle::with_template(
         "{percent}% {bar} {pos}/{len} [{elapsed_precise}>{eta_precise}, {per_sec}]",
@@ -42,6 +43,7 @@ pub fn execute_write(
         })
         .collect::<Vec<OptimizeResult>>();
 
+    pb.finish();
     let result = reduce_optimize_results(&mut results);
     println!("{result}");
     if let Some(backup_root) = backup_dir {
@@ -153,7 +155,7 @@ fn optimize_write(
         // `--deep-clean` pass; they are rare and not worth doubling CPU for.
         result.total_chunks += stats.total_chunks;
         result.preserved_opaque_chunks += stats.opaque_chunks;
-        return result;
+        result.corrupt_chunks += stats.corrupt_chunks;
     }
 
     // At this point we know at least one chunk is deletable, so pay the cost.
@@ -181,6 +183,7 @@ fn optimize_write(
     result.total_chunks += outcome.total_chunks;
     result.deleted_chunks += outcome.deleted_chunks;
     result.preserved_opaque_chunks += outcome.opaque_chunks;
+    result.corrupt_chunks += outcome.corrupt_chunks;
 
     if outcome.remaining_chunks == 0 {
         // Every chunk was removed (or the region had none): the whole region
@@ -587,5 +590,88 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&tmp_dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod nbt_safety_regression {
+    use crate::nbt::binary_reader::BinaryReader;
+    use crate::nbt::parse::parse_tag;
+
+    fn truncated_compound_nbt() -> Vec<u8> {
+        let mut nbt: Vec<u8> = Vec::new();
+        nbt.push(10); // TAG_Compound
+        nbt.extend_from_slice(&[0, 4]);
+        nbt.extend_from_slice(b"Test");
+        nbt.push(3); // TAG_Int "A" — parses fine
+        nbt.extend_from_slice(&[0, 1]);
+        nbt.extend_from_slice(b"A");
+        nbt.extend_from_slice(&123_i32.to_be_bytes());
+        nbt.push(8); // TAG_String "B" claiming 200 bytes but truncated
+        nbt.extend_from_slice(&[0, 1]);
+        nbt.extend_from_slice(b"B");
+        nbt.extend_from_slice(&[0, 200]);
+        nbt
+    }
+
+    /// Regression: a compound whose payload is truncated mid-child must FAIL
+    /// to parse. Previously the parser returned a partial tree (only child A),
+    /// which re-serializes shorter than the original and silently drops the
+    /// chunk's tail on rewrite.
+    #[test]
+    fn truncated_compound_is_an_error_not_partial_parse() {
+        let data = truncated_compound_nbt();
+        let mut reader = BinaryReader::new(&data);
+        assert!(
+            parse_tag(&mut reader).is_err(),
+            "truncated compound must fail instead of returning a partial tree"
+        );
+    }
+
+    /// Regression: a list declaring more elements than the payload holds must
+    /// fail instead of silently yielding fewer elements.
+    #[test]
+    fn truncated_list_is_an_error() {
+        let mut nbt: Vec<u8> = Vec::new();
+        nbt.push(9); // TAG_List
+        nbt.extend_from_slice(&[0, 2]); // name len 2
+        nbt.extend_from_slice(b"Ls");
+        nbt.push(3); // element type TAG_Int
+        nbt.extend_from_slice(&5_i32.to_be_bytes()); // declares 5 elements
+        nbt.extend_from_slice(&1_i32.to_be_bytes()); // only one present
+        let mut reader = BinaryReader::new(&nbt);
+        assert!(parse_tag(&mut reader).is_err());
+    }
+
+    /// Regression: an array declaring more bytes than the payload holds must
+    /// fail instead of returning a short read.
+    #[test]
+    fn truncated_byte_array_is_an_error() {
+        let mut nbt: Vec<u8> = Vec::new();
+        nbt.push(7); // TAG_Byte_Array
+        nbt.extend_from_slice(&[0, 1]); // name len
+        nbt.extend_from_slice(b"B");
+        nbt.extend_from_slice(&10_i32.to_be_bytes()); // claims 10 bytes
+        nbt.extend_from_slice(&[1, 2, 3]); // only 3 present
+        let mut reader = BinaryReader::new(&nbt);
+        assert!(parse_tag(&mut reader).is_err());
+    }
+
+    /// A crafted deeply-nested payload must hit the depth limit error rather
+    /// than overflowing the stack (which would abort the process mid-run).
+    #[test]
+    fn deep_nesting_hits_depth_limit_instead_of_stack_overflow() {
+        const DEPTH: usize = crate::nbt::MAX_NBT_DEPTH as usize + 64;
+        let mut data = Vec::with_capacity(DEPTH * 5);
+        for _ in 0..DEPTH {
+            data.push(10); // TAG_Compound
+            data.extend_from_slice(&[0, 1]); // name len 1
+            data.push(b'N');
+        }
+        let mut reader = BinaryReader::new(&data);
+        match parse_tag(&mut reader) {
+            Err(crate::nbt::NbtError::DepthLimit) => {}
+            other => panic!("expected DepthLimit, got {other:?}"),
+        }
     }
 }
