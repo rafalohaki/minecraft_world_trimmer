@@ -27,4 +27,3 @@ pub fn parse_compound_tag(
         }
     }
 }
-

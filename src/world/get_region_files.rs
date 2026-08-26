@@ -168,8 +168,8 @@ mod tests {
         std::fs::write(region_dir.join("r.0.0.mca"), b"x").unwrap();
         std::fs::write(tmp.join("level.dat"), b"fake").unwrap();
 
-        let _server_lock = crate::world::session_lock::acquire_session_lock(&tmp)
-            .expect("simulated server lock");
+        let _server_lock =
+            crate::world::session_lock::acquire_session_lock(&tmp).expect("simulated server lock");
 
         let worlds = vec![tmp.clone()];
         let err = get_region_files(&worlds).expect_err("locked world must be refused");

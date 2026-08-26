@@ -35,8 +35,10 @@ impl Location {
     }
 
     /// If the offset and size are both 0, then the chunk at that location hasn't been generated yet.
+    /// Offsets 0 and 1 point into the region header itself (location/timestamp
+    /// tables occupy sectors 0–1), so vanilla treats anything below 2 as invalid.
     pub fn is_valid(&self) -> bool {
-        self.size != 0 && self.offset != 0
+        self.size != 0 && self.offset >= 2
     }
 
     pub fn to_location_bytes(self) -> [u8; 4] {
@@ -58,8 +60,7 @@ impl Location {
         self.timestamp
     }
 
-    #[cfg(test)]
-    fn get_size(&self) -> u32 {
+    pub fn get_size(&self) -> u32 {
         self.size as u32 * 4096
     }
 }

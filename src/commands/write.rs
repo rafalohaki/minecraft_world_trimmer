@@ -78,17 +78,57 @@ fn backup_path_for(region_file: &Path, backup_root: &Path, world_paths: &[PathBu
 
 /// Move the original region file into the backup directory (same-volume rename:
 /// O(1), no extra disk space beyond what the trimmed replacement will use).
+/// Never overwrites an existing backup: a second run against the same backup
+/// dir must not destroy the (older, closer-to-original) file from the first
+/// run, so a numeric suffix is appended instead.
 fn quarantine_original(
     region_file: &Path,
     backup_root: &Path,
     world_paths: &[PathBuf],
 ) -> std::io::Result<PathBuf> {
-    let destination = backup_path_for(region_file, backup_root, world_paths);
+    let mut destination = backup_path_for(region_file, backup_root, world_paths);
     if let Some(parent) = destination.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    if destination.exists() {
+        let base_name = destination
+            .file_name()
+            .map(|n| n.to_os_string())
+            .unwrap_or_default();
+        destination = (1_u32..=10_000)
+            .map(|n| {
+                let mut name = base_name.clone();
+                name.push(format!(".{n}"));
+                destination.with_file_name(name)
+            })
+            .find(|candidate| !candidate.exists())
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "no free backup name after 10000 attempts",
+                )
+            })?;
+    }
     std::fs::rename(region_file, &destination)?;
     Ok(destination)
+}
+
+/// Remove the region file from the world: MOVE it into the backup dir when one
+/// is configured, otherwise delete it.
+fn remove_or_quarantine(
+    region_file: &Path,
+    backup_dir: Option<&Path>,
+    world_paths: &[PathBuf],
+    result: &mut OptimizeResult,
+) {
+    let removal = match backup_dir {
+        Some(backup_root) => quarantine_original(region_file, backup_root, world_paths).map(|_| ()),
+        None => std::fs::remove_file(region_file),
+    };
+    match removal {
+        Ok(()) => result.deleted_regions += 1,
+        Err(_) => result.io_errors += 1,
+    }
 }
 
 fn optimize_write(
@@ -108,16 +148,7 @@ fn optimize_write(
     let bytes = match read_region_file(region_file_path) {
         Ok(b) => b,
         Err(ParseRegionError::HeaderError) => {
-            let removal = match backup_dir {
-                Some(backup_root) => {
-                    quarantine_original(region_file_path, backup_root, world_paths).map(|_| ())
-                }
-                None => std::fs::remove_file(region_file_path),
-            };
-            match removal {
-                Ok(()) => result.deleted_regions += 1,
-                Err(_) => result.io_errors += 1,
-            }
+            remove_or_quarantine(region_file_path, backup_dir, world_paths, &mut result);
             return result;
         }
         Err(ParseRegionError::ReadError) => {
@@ -130,16 +161,7 @@ fn optimize_write(
     let stats = match crate::region_loader::region::analyze_region_bytes(&bytes) {
         Ok(s) => s,
         Err(ParseRegionError::HeaderError) => {
-            let removal = match backup_dir {
-                Some(backup_root) => {
-                    quarantine_original(region_file_path, backup_root, world_paths).map(|_| ())
-                }
-                None => std::fs::remove_file(region_file_path),
-            };
-            match removal {
-                Ok(()) => result.deleted_regions += 1,
-                Err(_) => result.io_errors += 1,
-            }
+            remove_or_quarantine(region_file_path, backup_dir, world_paths, &mut result);
             return result;
         }
         Err(ParseRegionError::ReadError) => {
@@ -149,29 +171,24 @@ fn optimize_write(
     };
 
     if stats.deletable_chunks == 0 {
-        // Nothing to delete and (by construction `analyze` already proved the
-        // file is header-valid) — skip the expensive recompression entirely.
-        // Corrupt chunks that `rewrite` would drop are left for a future
-        // `--deep-clean` pass; they are rare and not worth doubling CPU for.
+        // Nothing to delete (and `analyze` already proved the file is
+        // header-valid) — skip the expensive recompression entirely.
         result.total_chunks += stats.total_chunks;
         result.preserved_opaque_chunks += stats.opaque_chunks;
         result.corrupt_chunks += stats.corrupt_chunks;
+        // A region holding no chunk data at all (empty location table) is
+        // deleted as a whole file, matching check-mode accounting.
+        if stats.total_chunks == 0 && stats.corrupt_chunks == 0 {
+            remove_or_quarantine(region_file_path, backup_dir, world_paths, &mut result);
+        }
+        return result;
     }
 
     // At this point we know at least one chunk is deletable, so pay the cost.
     let outcome = match rewrite_region_bytes(&bytes, compression) {
         Ok(o) => o,
         Err(ParseRegionError::HeaderError) => {
-            let removal = match backup_dir {
-                Some(backup_root) => {
-                    quarantine_original(region_file_path, backup_root, world_paths).map(|_| ())
-                }
-                None => std::fs::remove_file(region_file_path),
-            };
-            match removal {
-                Ok(()) => result.deleted_regions += 1,
-                Err(_) => result.io_errors += 1,
-            }
+            remove_or_quarantine(region_file_path, backup_dir, world_paths, &mut result);
             return result;
         }
         Err(ParseRegionError::ReadError) => {
@@ -185,19 +202,12 @@ fn optimize_write(
     result.preserved_opaque_chunks += outcome.opaque_chunks;
     result.corrupt_chunks += outcome.corrupt_chunks;
 
-    if outcome.remaining_chunks == 0 {
-        // Every chunk was removed (or the region had none): the whole region
-        // file goes away.
-        let removal = match backup_dir {
-            Some(backup_root) => {
-                quarantine_original(region_file_path, backup_root, world_paths).map(|_| ())
-            }
-            None => std::fs::remove_file(region_file_path),
-        };
-        match removal {
-            Ok(()) => result.deleted_regions += 1,
-            Err(_) => result.io_errors += 1,
-        }
+    if outcome.remaining_chunks == 0 && outcome.corrupt_chunks == 0 {
+        // Every chunk was removed: the whole region file goes away. Never
+        // whole-delete a file containing chunks we could not parse — matching
+        // check-mode accounting, which refuses to count such regions as
+        // deletable.
+        remove_or_quarantine(region_file_path, backup_dir, world_paths, &mut result);
         return result;
     }
 
@@ -321,7 +331,205 @@ fn tempfile_path_for(target: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nbt::tag::Tag;
     use crate::region_loader::region::Region;
+    use flate2::read::ZlibEncoder;
+    use std::io::Read;
+
+    fn unique_tmp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "mwt_{tag}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn chunk_nbt(x: i32, z: i32, inhabited_time: i64) -> Tag {
+        Tag::Compound {
+            name: Some(String::new()),
+            value: vec![
+                Tag::Int {
+                    name: Some(String::from("xPos")),
+                    value: x,
+                },
+                Tag::Int {
+                    name: Some(String::from("zPos")),
+                    value: z,
+                },
+                Tag::String {
+                    name: Some(String::from("Status")),
+                    value: String::from("minecraft:full"),
+                },
+                Tag::Long {
+                    name: Some(String::from("InhabitedTime")),
+                    value: inhabited_time,
+                },
+            ],
+        }
+    }
+
+    fn zlib_chunk_frame(nbt: &Tag) -> Vec<u8> {
+        let mut compressed = Vec::new();
+        ZlibEncoder::new(nbt.to_bytes().as_slice(), Compression::fast())
+            .read_to_end(&mut compressed)
+            .unwrap();
+        let mut frame = ((compressed.len() + 1) as u32).to_be_bytes().to_vec();
+        frame.push(2_u8); // zlib
+        frame.extend_from_slice(&compressed);
+        frame
+    }
+
+    /// Builds a region file with the given chunk frames placed in consecutive
+    /// location-table slots starting at slot 0.
+    fn build_region(frames: &[Vec<u8>]) -> Vec<u8> {
+        let mut region = vec![0_u8; 8192];
+        let mut sector = 2_u32;
+        for (slot, frame) in frames.iter().enumerate() {
+            let sectors = frame.len().div_ceil(4096) as u32;
+            let entry = (sector << 8) | sectors;
+            region[slot * 4..slot * 4 + 4].copy_from_slice(&entry.to_be_bytes());
+            let mut padded = frame.clone();
+            padded.resize((sectors * 4096) as usize, 0);
+            region.extend_from_slice(&padded);
+            sector += sectors;
+        }
+        region
+    }
+
+    /// Regression (missing `return` in the fast path): a region whose chunks are
+    /// all inhabited must be left byte-for-byte untouched, with stats counted
+    /// exactly once.
+    #[test]
+    fn test_fast_path_leaves_region_without_deletable_chunks_untouched() {
+        let tmp = unique_tmp_dir("fastpath");
+        let target = tmp.join("r.0.0.mca");
+        let region_bytes = build_region(&[
+            zlib_chunk_frame(&chunk_nbt(0, 0, 1200)),
+            zlib_chunk_frame(&chunk_nbt(1, 0, 7)),
+        ]);
+        std::fs::write(&target, &region_bytes).unwrap();
+
+        let result = optimize_write(&target, Compression::fast(), None, &[]);
+        assert_eq!(result.total_chunks, 2, "stats must not be double-counted");
+        assert_eq!(result.deleted_chunks, 0);
+        assert_eq!(result.deleted_regions, 0);
+        assert_eq!(result.io_errors, 0);
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            region_bytes,
+            "file with nothing to delete must stay byte-identical"
+        );
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// Regression (corrupt chunks dropped on rewrite): a region with one
+    /// deletable and one corrupt chunk must keep the corrupt chunk's raw bytes
+    /// in the rewritten file.
+    #[test]
+    fn test_corrupt_chunk_survives_rewrite() {
+        let tmp = unique_tmp_dir("corrupt");
+        let target = tmp.join("r.0.0.mca");
+        // Distinctive garbage payload: valid frame header, invalid zlib stream.
+        let marker: Vec<u8> = (0..64).map(|i| 0xA0 ^ i as u8).collect();
+        let mut corrupt_frame = ((marker.len() + 1) as u32).to_be_bytes().to_vec();
+        corrupt_frame.push(2_u8);
+        corrupt_frame.extend_from_slice(&marker);
+
+        let region_bytes = build_region(&[
+            zlib_chunk_frame(&chunk_nbt(0, 0, 0)), // deletable
+            corrupt_frame.clone(),
+        ]);
+        std::fs::write(&target, &region_bytes).unwrap();
+
+        let result = optimize_write(&target, Compression::fast(), None, &[]);
+        assert_eq!(result.deleted_chunks, 1);
+        assert_eq!(result.corrupt_chunks, 1);
+        assert_eq!(result.deleted_regions, 0, "file must not be whole-deleted");
+        assert_eq!(result.io_errors, 0);
+
+        let rewritten = std::fs::read(&target).unwrap();
+        assert!(
+            rewritten
+                .windows(corrupt_frame.len())
+                .any(|w| w == corrupt_frame.as_slice()),
+            "corrupt chunk frame must be preserved verbatim in the rewritten file"
+        );
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// A region containing only corrupt chunks must be left completely untouched.
+    #[test]
+    fn test_corrupt_only_region_is_left_untouched() {
+        let tmp = unique_tmp_dir("corruptonly");
+        let target = tmp.join("r.0.0.mca");
+        let mut corrupt_frame = 65_u32.to_be_bytes().to_vec();
+        corrupt_frame.push(2_u8);
+        corrupt_frame.extend_from_slice(&[0xFF; 64]);
+        let region_bytes = build_region(&[corrupt_frame]);
+        std::fs::write(&target, &region_bytes).unwrap();
+
+        let result = optimize_write(&target, Compression::fast(), None, &[]);
+        assert_eq!(result.corrupt_chunks, 1);
+        assert_eq!(result.deleted_regions, 0);
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            region_bytes,
+            "corrupt-only region must stay byte-identical"
+        );
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// A header-only region file with an empty location table holds no data and
+    /// is removed as a whole, matching check-mode accounting.
+    #[test]
+    fn test_empty_region_file_is_removed() {
+        let tmp = unique_tmp_dir("emptyregion");
+        let target = tmp.join("r.0.0.mca");
+        std::fs::write(&target, vec![0_u8; 8192]).unwrap();
+
+        let result = optimize_write(&target, Compression::fast(), None, &[]);
+        assert_eq!(result.deleted_regions, 1);
+        assert_eq!(result.io_errors, 0);
+        assert!(!target.exists(), "empty region file must be deleted");
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// A second quarantine of a same-named region file must not overwrite the
+    /// existing backup from an earlier run.
+    #[test]
+    fn test_quarantine_does_not_overwrite_existing_backup() {
+        let tmp = unique_tmp_dir("noclobber");
+        let world = tmp.join("world");
+        let region_dir = world.join("region");
+        std::fs::create_dir_all(&region_dir).unwrap();
+        let backup_root = tmp.join("backup");
+        let world_paths = vec![world.clone()];
+        let target = region_dir.join("r.0.0.mca");
+
+        std::fs::write(&target, b"FIRST RUN ORIGINAL").unwrap();
+        quarantine_original(&target, &backup_root, &world_paths).unwrap();
+        std::fs::write(&target, b"SECOND RUN CONTENT").unwrap();
+        let second_dest = quarantine_original(&target, &backup_root, &world_paths).unwrap();
+
+        assert_eq!(
+            std::fs::read(backup_root.join("region/r.0.0.mca")).unwrap(),
+            b"FIRST RUN ORIGINAL",
+            "the older backup must survive a second run"
+        );
+        assert_eq!(std::fs::read(&second_dest).unwrap(), b"SECOND RUN CONTENT");
+        assert_ne!(second_dest, backup_root.join("region/r.0.0.mca"));
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
 
     #[test]
     fn test_tempfile_path_is_sibling() {

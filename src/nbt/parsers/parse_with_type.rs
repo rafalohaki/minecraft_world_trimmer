@@ -3,7 +3,6 @@ use crate::nbt::parsers::parse_compound_tag::parse_compound_tag;
 use crate::nbt::tag::Tag;
 use thiserror::Error;
 
-
 /// Maximum NBT nesting depth. Vanilla chunk data stays far below this
 /// (deepest observed structures are ~10 levels); the cap only exists so a
 /// crafted or corrupt payload cannot drive the recursive parser into a stack
@@ -81,8 +80,7 @@ pub fn parse_with_type_depth(
             Ok(Tag::String { name, value })
         }
         9 => {
-            let (list_elem_type, value) =
-                parse_list_nested(reader, depth)?;
+            let (list_elem_type, value) = parse_list_nested(reader, depth)?;
             Ok(Tag::List {
                 name,
                 value,
@@ -157,4 +155,3 @@ mod tests {
         assert!(matches!(error, NbtError::UnsupportedTag(99)));
     }
 }
-

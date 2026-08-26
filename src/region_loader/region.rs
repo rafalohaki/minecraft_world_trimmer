@@ -49,9 +49,10 @@ pub struct RegionRewrite {
     pub total_chunks: usize,
     pub deleted_chunks: usize,
     pub opaque_chunks: usize,
-    /// Unparsable chunks found during the rewrite. They are KEPT verbatim:
-    /// silently dropping them on write would destroy data Check reported as
-    /// preserved.
+    /// Unparsable chunks found during the rewrite. Their raw sectors are KEPT
+    /// verbatim (copied straight from the input): silently dropping them on
+    /// write would destroy data Check reported as preserved. Not counted in
+    /// `total_chunks`, matching `RegionStats`.
     pub corrupt_chunks: usize,
     pub compression_fallbacks: usize,
     pub header_write_failures: usize,
@@ -139,10 +140,25 @@ pub fn rewrite_region_bytes(
         }
 
         let Ok(chunk) = Chunk::from_location(bytes, location, i) else {
-            // Corrupt chunk: KEPT verbatim. Dropping it here would silently
-            // destroy data the Check pass reports as preserved.
+            // Corrupt chunk: KEPT verbatim by copying the raw sectors its
+            // location entry claims. Dropping it here would silently destroy
+            // data the Check pass reports as preserved.
             outcome.corrupt_chunks += 1;
-            outcome.total_chunks += 1;
+            if let Some(mut raw) = salvage_raw_chunk(bytes, location) {
+                align_vec_size(&mut raw);
+                let new_position = (data.len() + 8192) as u32;
+                if let Ok(new_location) = Location::new(new_position, raw.len() as u32, timestamp) {
+                    new_location_table[i..i + 4].copy_from_slice(&new_location.to_location_bytes());
+                    new_timestamp_table[i..i + 4]
+                        .copy_from_slice(&new_location.to_timestamp_bytes());
+                    data.extend_from_slice(&raw);
+                    outcome.remaining_chunks += 1;
+                } else {
+                    outcome.header_write_failures += 1;
+                }
+            }
+            // A location entry whose sectors lie entirely past EOF carries no
+            // data at all — there is nothing to preserve.
             continue;
         };
 
@@ -315,6 +331,21 @@ impl Region {
 fn align_vec_size(vec: &mut Vec<u8>) {
     let aligned_size = vec.len().div_ceil(4096) * 4096;
     vec.resize(aligned_size, 0);
+}
+
+/// Raw bytes of the sector range a location entry claims, clamped to the file
+/// end. Used to preserve unparsable (corrupt) chunks verbatim on rewrite.
+/// Returns `None` when the claimed range lies entirely past EOF (a phantom
+/// entry with no data behind it).
+fn salvage_raw_chunk(bytes: &[u8], location: Location) -> Option<Vec<u8>> {
+    let start = location.get_offset() as usize;
+    if start >= bytes.len() {
+        return None;
+    }
+    let end = start
+        .checked_add(location.get_size() as usize)?
+        .min(bytes.len());
+    Some(bytes[start..end].to_vec())
 }
 
 const MAX_REGION_FILE_SIZE: u64 = 1_000_000_000 + 8192;

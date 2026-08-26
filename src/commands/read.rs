@@ -33,7 +33,6 @@ pub fn execute_read(world_paths: &[PathBuf]) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-
 fn optimize_read(region_file_path: &Path) -> OptimizeResult {
     let mut result = OptimizeResult::default();
 
@@ -43,7 +42,10 @@ fn optimize_read(region_file_path: &Path) -> OptimizeResult {
             result.deleted_chunks += stats.deletable_chunks;
             result.preserved_opaque_chunks += stats.opaque_chunks;
             result.corrupt_chunks += stats.corrupt_chunks;
-            if stats.deletable_chunks >= stats.total_chunks {
+            // A region counts as whole-file-deletable only when every parsed
+            // chunk is deletable AND nothing unparsable remains — write mode
+            // preserves corrupt chunks, so it will keep such files.
+            if stats.deletable_chunks >= stats.total_chunks && stats.corrupt_chunks == 0 {
                 result.deleted_regions += 1;
             }
         }
